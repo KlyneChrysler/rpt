@@ -110,10 +110,15 @@ denser form meant to be read back into an agent's own context).
 | Command | What it does |
 |---|---|
 | `rpt init` | Installs hooks and scaffolds config/pricing files. |
-| `rpt status` | Shows the current active run, if any. |
+| `rpt status` | Shows the newest run that is not finished with - the one in progress, or one that has ended but not yet been recorded. |
 | `rpt runs` | Lists every run recorded in this repository. |
 | `rpt run <id>` | Shows one run: task, state, claims, and model usage counts. |
-| `rpt events <id>` (alias `rpt replay`) | Prints the full event timeline for a run. |
+| `rpt events <id>` (alias `rpt replay`) | Prints the full event timeline for a run, warning first if that log has unreadable lines. |
+
+Every command works from anywhere inside the repository, not just its root: rpt walks
+up to the git root (or the nearest `.rpt/`) to find it. If there is no repository above
+the working directory at all, that is what it says - it does not answer with an empty
+history and a zero exit, which is what a genuinely empty repository looks like.
 
 There is no write or mutating command beyond `rpt init` and the internal `rpt hook`
 entry point Claude Code itself calls - every other command is read-only.

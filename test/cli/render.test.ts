@@ -89,16 +89,32 @@ describe("renderTimeline", () => {
 	];
 
 	it("prints one line per event with a relative offset", () => {
-		const lines = renderTimeline(events, "text").trim().split("\n");
+		const lines = renderTimeline(events, 0, "text").trim().split("\n");
 		expect(lines).toHaveLength(2);
 		expect(lines[1]).toContain("00:42");
 		expect(lines[1]).toContain("a.ts");
 	});
 
 	it("emits parseable json with one entry per event", () => {
-		const parsed = JSON.parse(renderTimeline(events, "json"));
-		expect(parsed).toHaveLength(2);
-		expect(parsed[1].kind).toBe("FileMutated");
+		const parsed = JSON.parse(renderTimeline(events, 0, "json"));
+		expect(parsed.events).toHaveLength(2);
+		expect(parsed.events[1].kind).toBe("FileMutated");
+	});
+
+	// The run summary already warns about a gapped run. A timeline that stays silent
+	// about the same log is the surface a user reaches for to find out what is
+	// missing, so it is the last place that should look clean.
+	it("warns visibly when the run's log has unreadable lines", () => {
+		expect(renderTimeline(events, 2, "text")).toMatch(/2.*gap/i);
+	});
+
+	it("says nothing about gaps for a clean log", () => {
+		expect(renderTimeline(events, 0, "text")).not.toMatch(/gap/i);
+	});
+
+	it("carries the gap count in json alongside the events", () => {
+		const parsed = JSON.parse(renderTimeline(events, 3, "json"));
+		expect(parsed.gapCount).toBe(3);
 	});
 });
 

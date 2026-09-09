@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { join } from "node:path";
 import { Command } from "commander";
-import type { AgentRun } from "../domain/run.js";
+import type { AgentEvent } from "../domain/events.js";
+import { projectRun, type AgentRun } from "../domain/run.js";
 import { loadRun } from "../app/loadRun.js";
 import { initRepo } from "../app/initRepo.js";
 import { readEvents } from "../store/eventLog.js";
 import { findRepoRoot, rptDirOf } from "../store/paths.js";
-import { activeRun, latestEntries, readIndex } from "../store/runIndex.js";
+import { latestEntries, openRun, readIndex } from "../store/runIndex.js";
 import { runHookCommand } from "./hook.js";
 import type { OutputFormat } from "./format.js";
 import { renderActiveRun, renderRun, renderRunList, renderTimeline } from "./render.js";
@@ -30,9 +31,12 @@ program.command("hook").description("internal: consume an agent hook payload").a
 	process.exitCode = await runHookCommand(root, await readStdin());
 });
 
-program.command("status").description("show the active run").action(async () => {
+// openRun, not activeRun: activeRun is the gate's narrower predicate and excludes
+// a run that is still running, which is exactly the run a user is asking about
+// when they check status mid-session.
+program.command("status").description("show the run in progress, if any").action(async () => {
 	const root = await repoRoot();
-	const entry = await activeRun(rptDirOf(root));
+	const entry = await openRun(rptDirOf(root));
 	const run = entry === null ? null : await loadRun(root, entry.id);
 	process.stdout.write(`${renderActiveRun(run, formatOf())}\n`);
 });
@@ -52,8 +56,10 @@ program
 	.alias("replay")
 	.description("print the event timeline")
 	.action(async (id: string) => {
-		const { events } = await readEvents(rptDirOf(await repoRoot()), parseRunId(id));
-		process.stdout.write(renderTimeline(events, formatOf()));
+		const runId = parseRunId(id);
+		const { events, gapCount } = await readEvents(rptDirOf(await repoRoot()), runId);
+		requireExistingRun(runId, events);
+		process.stdout.write(renderTimeline(events, gapCount, formatOf()));
 	});
 
 // Read commands answer for a repository, not for a directory, and a repository
@@ -86,6 +92,19 @@ function parseRunId(raw: string): number {
 async function loadRunOrThrow(root: string, runId: number): Promise<AgentRun> {
 	try {
 		return await loadRun(root, runId);
+	} catch (error) {
+		throw new Error(missingRunMessage(runId, error));
+	}
+}
+
+// An unknown run id used to print an empty timeline and exit zero here, while
+// `rpt run` correctly errored for the same id - one command answering "nothing
+// happened" to a question the other answered "no such run". projectRun holds the
+// rule for what makes a run exist, so it is asked rather than restated; the
+// projection itself is not needed, only its verdict.
+function requireExistingRun(runId: number, events: AgentEvent[]): void {
+	try {
+		projectRun(runId, events);
 	} catch (error) {
 		throw new Error(missingRunMessage(runId, error));
 	}

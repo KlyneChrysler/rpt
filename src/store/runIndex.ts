@@ -108,6 +108,17 @@ function isAdjudicable(entry: RunIndexEntry): boolean {
 	return entry.state !== "RUNNING" && !isTerminal(entry.state);
 }
 
+// A different question from activeRun's, deliberately kept as a different
+// function. activeRun answers the gate's question - is there a run awaiting
+// adjudication - and a later plan computes a verdict and a commit gate directly
+// on it, so its exclusion of RUNNING has to stay exact. openRun answers what a
+// user means by "what is happening right now", which includes the run in
+// progress. Widening activeRun to serve both is what let the listing show a
+// running run while status reported none.
+export async function openRun(rptDir: string): Promise<RunIndexEntry | null> {
+	return (await listRuns(rptDir)).find((entry) => !isTerminal(entry.state)) ?? null;
+}
+
 function reserved(id: RunId): RunIndexEntry {
 	return { id, task: "", state: "RUNNING", startedAt: new Date().toISOString(), endedAt: null };
 }

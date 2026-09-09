@@ -2,7 +2,7 @@ import { appendFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { activeRun, allocateRunId, latestEntries, listRuns, readIndex, upsertRun } from "../../src/store/runIndex.js";
+import { activeRun, allocateRunId, latestEntries, listRuns, openRun, readIndex, upsertRun } from "../../src/store/runIndex.js";
 import type { RunIndexEntry } from "../../src/store/runIndex.js";
 
 let rptDir = "";
@@ -101,6 +101,39 @@ describe("activeRun", () => {
 
 	it("is null when there are no runs at all", async () => {
 		expect(await activeRun(rptDir)).toBeNull();
+	});
+});
+
+// activeRun answers the gate's question - is there a run awaiting adjudication -
+// and must keep excluding RUNNING for that meaning to stay precise. openRun answers
+// the user's question: is a run happening right now. Two questions, two functions;
+// widening one to serve the other is what made the listing and status contradict
+// each other while a run was live.
+describe("openRun", () => {
+	it("is the run that is still running", async () => {
+		await upsertRun(rptDir, entry(1, { state: "RUNNING" }));
+		expect((await openRun(rptDir))?.id).toBe(1);
+	});
+
+	it("is the newest run that has not reached a terminal state", async () => {
+		await upsertRun(rptDir, entry(1, { state: "ENDED" }));
+		await upsertRun(rptDir, entry(2, { state: "RECORDED" }));
+		expect((await openRun(rptDir))?.id).toBe(1);
+	});
+
+	it("is null when every run has been recorded", async () => {
+		await upsertRun(rptDir, entry(1, { state: "RECORDED" }));
+		expect(await openRun(rptDir)).toBeNull();
+	});
+
+	it("is null when there are no runs at all", async () => {
+		expect(await openRun(rptDir)).toBeNull();
+	});
+
+	it("does not change what activeRun means", async () => {
+		await upsertRun(rptDir, entry(1, { state: "RUNNING" }));
+		expect(await activeRun(rptDir)).toBeNull();
+		expect(await openRun(rptDir)).not.toBeNull();
 	});
 });
 

@@ -156,3 +156,49 @@ describe("rpt finds the repository from anywhere inside it", () => {
 		expect(result.stderr).toMatch(/no git repository|not inside/i);
 	});
 });
+
+describe("rpt status: what is happening right now", () => {
+	// The listing showing a RUNNING run while status said there was none is exactly
+	// the contradiction a user hits at the one moment they check: mid-session.
+	it("shows the run that is still running rather than claiming there is none", async () => {
+		const repo = await makeFixtureRepo();
+		await handleHook(repo, await fixture("SessionStart"));
+
+		const result = await runCli(["status", "--format", "json"], repo);
+
+		expect(result.exitCode).toBe(0);
+		expect(JSON.parse(result.stdout).id).toBe(1);
+	});
+
+	it("agrees with the run listing while a run is live", async () => {
+		const repo = await makeFixtureRepo();
+		await handleHook(repo, await fixture("SessionStart"));
+
+		const listed = JSON.parse((await runCli(["runs", "--format", "json"], repo)).stdout);
+		const status = JSON.parse((await runCli(["status", "--format", "json"], repo)).stdout);
+
+		expect(listed.runs[0].id).toBe(status.id);
+	});
+});
+
+describe("rpt events", () => {
+	it("errors for a run id that does not exist instead of printing nothing", async () => {
+		const repo = await repoWithOneEndedRun();
+
+		const result = await runCli(["events", "999"], repo);
+
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toContain("999");
+	});
+
+	it("warns about a gapped log the way the run summary already does", async () => {
+		const repo = await repoWithOneEndedRun();
+		await appendFile(join(repo, ".rpt/runs/1/events.jsonl"), '{"runId":1,"seq":9,"kind":"Fi');
+
+		const result = await runCli(["events", "1"], repo);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toMatch(/gap/i);
+	});
+});

@@ -27,10 +27,25 @@ export function renderRunList(result: IndexReadResult, format: OutputFormat): st
 	return [...corruptWarning(result.corruptLines), ...result.entries.map(runListLine)].join("\n");
 }
 
-export function renderTimeline(events: AgentEvent[], format: OutputFormat): string {
-	if (format === "json") return JSON.stringify(events, null, 2);
+// gapCount travels with the events for the same reason corruptLines travels with
+// the run list: a timeline with lines missing and a timeline that is complete look
+// identical once the unreadable lines have been dropped. The run summary already
+// warns about a gapped run, and the timeline is where a user goes to find out what
+// is missing - it is the last surface that should read clean.
+export function renderTimeline(events: AgentEvent[], gapCount: number, format: OutputFormat): string {
+	if (format === "json") return JSON.stringify({ events, gapCount }, null, 2);
+	return `${[...gapWarning(gapCount), ...timelineLines(events)].join("\n")}\n`;
+}
+
+function timelineLines(events: AgentEvent[]): string[] {
 	const start = events[0]?.ts ?? new Date().toISOString();
-	return `${events.map((event) => timelineLine(start, event)).join("\n")}\n`;
+	return events.map((event) => timelineLine(start, event));
+}
+
+function gapWarning(gapCount: number): string[] {
+	return gapCount > 0
+		? [`WARNING: ${gapCount} unreadable line(s) in this run's event log - the timeline below has gaps`, ""]
+		: [];
 }
 
 function runListLine(entry: IndexReadResult["entries"][number]): string {

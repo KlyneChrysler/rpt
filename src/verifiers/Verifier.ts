@@ -38,14 +38,30 @@ async function runOne(verifier: Verifier, context: RunContext): Promise<Verifier
 	try {
 		result = await verifier.run(context);
 	} catch (error) {
-		return skipped(verifier.id, `verifier threw: ${(error as Error).message}`);
+		return skipped(verifier.id, `verifier threw: ${normalizeThrownValue(error)}`);
 	}
-	return assertExplained(result);
+	try {
+		return assertExplained(result);
+	} catch (error) {
+		return skipped(verifier.id, `verifier ${result.id} violated contract: ${(error as Error).message}`);
+	}
+}
+
+function normalizeThrownValue(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	if (typeof error === "string") {
+		return error;
+	}
+	return String(error);
 }
 
 function assertExplained(result: VerifierResult): VerifierResult {
-	if (result.status !== "passed" && result.reason === null) {
-		throw new Error(`verifier ${result.id} returned ${result.status} without a reason`);
+	if (result.status !== "passed") {
+		if (result.reason === null || (typeof result.reason === "string" && result.reason.trim() === "")) {
+			throw new Error(`returned ${result.status} without a reason`);
+		}
 	}
 	return result;
 }

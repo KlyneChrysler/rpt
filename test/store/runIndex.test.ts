@@ -1,8 +1,8 @@
-import { mkdtemp } from "node:fs/promises";
+import { appendFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
-import { activeRun, allocateRunId, listRuns, upsertRun } from "../../src/store/runIndex.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { activeRun, allocateRunId, listRuns, readIndex, upsertRun } from "../../src/store/runIndex.js";
 import type { RunIndexEntry } from "../../src/store/runIndex.js";
 
 let rptDir = "";
@@ -63,5 +63,43 @@ describe("activeRun", () => {
 
 	it("is null when there are no runs at all", async () => {
 		expect(await activeRun(rptDir)).toBeNull();
+	});
+});
+
+describe("readIndex", () => {
+	it("returns the valid entries and reports one corrupt line", async () => {
+		await upsertRun(rptDir, entry(1));
+		await appendFile(join(rptDir, "index.jsonl"), "not json\n");
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		const { entries, corruptLines } = await readIndex(join(rptDir, "index.jsonl"));
+		spy.mockRestore();
+		expect(entries.map((e) => e.id)).toEqual([1]);
+		expect(corruptLines).toBe(1);
+	});
+
+	it("reports zero corrupt lines for a wholly valid index", async () => {
+		await upsertRun(rptDir, entry(1));
+		await upsertRun(rptDir, entry(2));
+		const { corruptLines } = await readIndex(join(rptDir, "index.jsonl"));
+		expect(corruptLines).toBe(0);
+	});
+
+	it("does not throw when it warns about corrupted lines", async () => {
+		await upsertRun(rptDir, entry(1));
+		await appendFile(join(rptDir, "index.jsonl"), "not json\nalso not json\n");
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		await expect(readIndex(join(rptDir, "index.jsonl"))).resolves.toMatchObject({ corruptLines: 2 });
+		spy.mockRestore();
+	});
+});
+
+describe("torn fragment recovery", () => {
+	it("does not swallow the next valid write when it lands right after a torn fragment", async () => {
+		await upsertRun(rptDir, entry(1));
+		await appendFile(join(rptDir, "index.jsonl"), '{"id":2,"task":"broken"');
+		await upsertRun(rptDir, entry(2));
+		const { entries, corruptLines } = await readIndex(join(rptDir, "index.jsonl"));
+		expect(entries.map((e) => e.id).sort()).toEqual([1, 2]);
+		expect(corruptLines).toBe(1);
 	});
 });

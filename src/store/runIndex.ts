@@ -13,6 +13,8 @@ export type RunIndexEntry = {
 	endedAt: string | null;
 };
 
+export type IndexReadResult = { entries: RunIndexEntry[]; corruptLines: number };
+
 export async function allocateRunId(rptDir: string): Promise<RunId> {
 	const path = await preparedIndex(rptDir);
 	return withInProcessLock(path, () => allocateRunIdLocked(path));
@@ -26,7 +28,8 @@ async function allocateRunIdLocked(path: string): Promise<RunId> {
 	const release = await lockfile.lock(path, { retries: { retries: 20, minTimeout: 5, maxTimeout: 100 } });
 	try {
 		await ensureTrailingNewline(path);
-		const highest = (await readEntries(path)).reduce((max, entry) => Math.max(max, entry.id), 0);
+		const { entries } = await readIndex(path);
+		const highest = entries.reduce((max, entry) => Math.max(max, entry.id), 0);
 		const id = highest + 1;
 		await appendFile(path, `${JSON.stringify(reserved(id))}\n`, "utf8");
 		return id;
@@ -51,8 +54,9 @@ async function upsertRunLocked(path: string, entry: RunIndexEntry): Promise<void
 }
 
 export async function listRuns(rptDir: string): Promise<RunIndexEntry[]> {
+	const { entries } = await readIndex(join(rptDir, "index.jsonl"));
 	const latest = new Map<RunId, RunIndexEntry>();
-	for (const entry of await readEntries(join(rptDir, "index.jsonl"))) latest.set(entry.id, entry);
+	for (const entry of entries) latest.set(entry.id, entry);
 	return [...latest.values()].sort((left, right) => right.id - left.id);
 }
 
@@ -80,20 +84,34 @@ async function preparedIndex(rptDir: string): Promise<string> {
 	return path;
 }
 
-async function readEntries(path: string): Promise<RunIndexEntry[]> {
+// The index is a rebuildable cache, not the source of truth (that's the event log), so a
+// corrupt line must not make the tool unusable. But it also must not vanish without a trace:
+// a run silently dropped here is a run activeRun can no longer see to gate. corruptLines lets
+// every caller know the count, and a non-zero count is also reported to stderr immediately.
+export async function readIndex(path: string): Promise<IndexReadResult> {
 	const text = await readOrEmpty(path);
-	return text
-		.split("\n")
-		.filter((line) => line !== "")
-		.flatMap((line) => parseEntry(line));
+	const lines = text.split("\n").filter((line) => line !== "");
+	const entries: RunIndexEntry[] = [];
+	let corruptLines = 0;
+	for (const line of lines) {
+		const entry = parseEntry(line);
+		if (entry === null) corruptLines += 1;
+		else entries.push(entry);
+	}
+	if (corruptLines > 0) warnCorruptLines(path, corruptLines);
+	return { entries, corruptLines };
 }
 
-function parseEntry(line: string): RunIndexEntry[] {
+function parseEntry(line: string): RunIndexEntry | null {
 	try {
-		return [JSON.parse(line) as RunIndexEntry];
+		return JSON.parse(line) as RunIndexEntry;
 	} catch {
-		return [];
+		return null;
 	}
+}
+
+function warnCorruptLines(path: string, corruptLines: number): void {
+	process.stderr.write(`rpt: ${path}: ${corruptLines} unparseable line(s) ignored in the run index\n`);
 }
 
 // A crash can leave a torn, newline-less fragment at the end of the log. Without

@@ -13,5 +13,19 @@ Sanitisation applied: absolute paths rewritten to `/fixture/repo`, `session_id` 
 replaced with placeholders. No other field was altered, so field names and nesting are
 exactly what Claude Code emits.
 
+A second capture on the same day and version added the Edit and NotebookEdit tools,
+after a review found the adapter was reading a notebook path no fixture proved.
+
+Verified write tools: Write, Edit, NotebookEdit. MultiEdit does NOT exist in this build;
+a session asked to use it reported the tool was unavailable, so nothing here verifies it.
+
+Note what the Edit and NotebookEdit responses contain. Edit returns originalFile,
+newString and oldString. NotebookEdit returns original_file, updated_file, old_source
+and new_source. Field naming is inconsistent between tools, camelCase in one and
+snake_case in the other, which is precisely why the response summary uses an allowlist
+of known-safe fields rather than a denylist of known-bad ones. A denylist written
+against the Write response alone would have leaked whole notebook and file contents
+into the event log.
+
 If a field the adapter reads is absent from every fixture here, the adapter must not
 read it. Re-capture with the same method rather than editing these files by hand.

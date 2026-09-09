@@ -1,0 +1,19 @@
+{
+  "cwd": "/fixture/repo",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "acceptEdits",
+  "prompt_id": "f33d0e59-b555-4b39-a3b6-c3f8dd9afae0",
+  "session_id": "fixture-session",
+  "tool_input": {
+    "file_path": "/fixture/repo/edit-me.txt",
+    "new_string": "BRAVO",
+    "old_string": "bravo",
+    "replace_all": false
+  },
+  "tool_name": "Edit",
+  "tool_use_id": "toolu_01Q1t6EDzeQDrabKxCLyDHJ4",
+  "transcript_path": "/fixture/repo/.claude/transcript.jsonl"
+}

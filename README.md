@@ -51,7 +51,11 @@ adds `.rpt/` to `.gitignore`, and scaffolds two files if they don't already exis
   thresholds. The whole file is inert in Plan 1: `loadConfig` parses and validates
   it, but nothing calls `loadConfig` anywhere in this codebase yet. It's scaffolded
   now so the shape is settled for the verification plan that comes next, not
-  because anything reads it today.
+  because anything reads it today. **Verification, when it runs, executes this
+  project's own test command - arbitrary code chosen by the project, not by rpt -
+  inside a git worktree isolated from your working tree. That isolation is not a
+  sandbox: the command runs with the same OS-level privileges as `rpt` itself, and
+  rpt does not restrict what it can read, write, or reach over the network.**
 - `.rpt/pricing.json` - **ships empty.** rpt does not know what any model costs and
   will not guess. A model with no entry here reports no cost for its usage, not an
   invented one. Fill in `input`, `output`, `cacheRead` and `cacheCreate` (USD per

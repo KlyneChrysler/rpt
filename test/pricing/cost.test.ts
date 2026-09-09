@@ -64,6 +64,22 @@ describe("costOf", () => {
 		expect(costOf(usage, withExtraKey)).toEqual({ usd: null, unpriced: ["model-a"] });
 	});
 
+	it("returns null and names the model when a rate is negative", () => {
+		const negative = {
+			version: 1,
+			rates: { "model-a": { input: -3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 } },
+		} as unknown as PricingTable;
+		expect(costOf(usage, negative)).toEqual({ usd: null, unpriced: ["model-a"] });
+	});
+
+	it("returns null and names the model when a rate is not finite", () => {
+		const infinite = {
+			version: 1,
+			rates: { "model-a": { input: Number.POSITIVE_INFINITY, output: 15, cacheRead: 0.3, cacheCreate: 3.75 } },
+		} as unknown as PricingTable;
+		expect(costOf(usage, infinite)).toEqual({ usd: null, unpriced: ["model-a"] });
+	});
+
 	it("returns null and names the model when a rate value is not a number", () => {
 		const stringRate = {
 			version: 1,

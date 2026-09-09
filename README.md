@@ -56,7 +56,11 @@ adds `.rpt/` to `.gitignore`, and scaffolds two files if they don't already exis
   will not guess. A model with no entry here reports no cost for its usage, not an
   invented one. Fill in `input`, `output`, `cacheRead` and `cacheCreate` (USD per
   million tokens) per model yourself if you want that pricing function to have
-  anything to work with.
+  anything to work with. Each rate must be a finite, non-negative number or an
+  explicit `null` meaning "known to be unknown"; an entry that is anything else -
+  a missing key, an extra key, a string, a negative number - is dropped at load
+  time with a line on stderr and its model reports no cost, because a
+  plausible-looking wrong number is worse than no number.
 
 ## What gets recorded
 

@@ -7,12 +7,20 @@ import type { ModelUsage } from "../domain/run.js";
 // "known to be unknown, don't guess" - and no other fields tolerated, so a
 // typo'd key doesn't quietly ride along as an ignored extra while the field
 // it was meant to set is treated as missing.
+//
+// A rate is also finite and not negative. A negative rate is the same class of
+// defect as a missing key priced at zero: it produces a plausible-looking number
+// (a negative cost, or Infinity) instead of refusing, and a plausible wrong number
+// is worse than no number at all. Out of range means malformed, so the model comes
+// out unpriced.
+const rateSchema = z.number().finite().nonnegative().nullable();
+
 export const ratesSchema = z
 	.object({
-		input: z.number().nullable(),
-		output: z.number().nullable(),
-		cacheRead: z.number().nullable(),
-		cacheCreate: z.number().nullable(),
+		input: rateSchema,
+		output: rateSchema,
+		cacheRead: rateSchema,
+		cacheCreate: rateSchema,
 	})
 	.strict();
 

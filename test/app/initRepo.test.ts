@@ -75,6 +75,17 @@ describe("initRepo", () => {
 		expect(ignored.match(/^\.rpt\/$/gm)).toHaveLength(1);
 	});
 
+	it("does not duplicate the gitignore entry when the file uses CRLF line endings", async () => {
+		const repo = await makeFixtureRepo();
+		await writeFile(join(repo, ".gitignore"), "node_modules\r\n.rpt/\r\n");
+
+		const report = await initRepo(repo);
+
+		expect(report.gitignoreUpdated).toBe(false);
+		const ignored = await read(repo, ".gitignore");
+		expect(ignored.match(/\.rpt\/[ \t]*\r?$/gm)).toHaveLength(1);
+	});
+
 	it("creates a config file that loadConfig accepts", async () => {
 		const repo = await makeFixtureRepo();
 		await initRepo(repo);

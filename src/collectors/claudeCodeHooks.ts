@@ -54,12 +54,33 @@ function hasRpt(matchers: HookMatcher[]): boolean {
 }
 
 async function readSettings(path: string): Promise<Settings> {
+	let parsed: unknown;
 	try {
-		return JSON.parse(await readFile(path, "utf8")) as Settings;
+		parsed = JSON.parse(await readFile(path, "utf8"));
 	} catch (error) {
 		if (isMissingFile(error)) return {};
-		throw new Error(`.claude/settings.json is unreadable, refusing to overwrite it: ${(error as Error).message}`);
+		throw unreadableSettingsError((error as Error).message);
 	}
+	// Valid JSON is not enough: a top-level array, string, number, or null all
+	// parse without error, but none of them is a settings object. Casting one
+	// straight to Settings would let the spread below silently replace the
+	// user's file with something unrecognizable - refuse instead.
+	if (!isPlainObject(parsed)) throw unreadableSettingsError(`expected a JSON object, got ${describeShape(parsed)}`);
+	return parsed as Settings;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeShape(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "an array";
+	return `a ${typeof value}`;
+}
+
+function unreadableSettingsError(detail: string): Error {
+	return new Error(`.claude/settings.json is unreadable, refusing to overwrite it: ${detail}`);
 }
 
 async function writeSettings(path: string, settings: Settings): Promise<void> {

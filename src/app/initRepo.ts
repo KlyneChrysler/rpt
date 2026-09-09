@@ -1,8 +1,8 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { installHooks } from "../collectors/claudeCodeHooks.js";
 import { DEFAULT_CONFIG } from "../config/load.js";
-import { rptDirOf } from "../store/paths.js";
+import { createPricingFileIfAbsent } from "../store/pricing.js";
 
 export type InitReport = {
 	hooksInstalled: boolean;
@@ -13,14 +13,17 @@ export type InitReport = {
 
 // `rpt init` installs agent hooks only. Git hooks and the commit gate belong
 // to a later plan and are not added here.
+//
+// Nothing here writes under .rpt directly: createPricingFileIfAbsent (and the
+// directory creation it does) lives in src/store, the one layer allowed to
+// touch .rpt, the same way runIndex.ts and currentRun.ts already own it.
 export async function initRepo(repoRoot: string): Promise<InitReport> {
-	await mkdir(rptDirOf(repoRoot), { recursive: true });
 	await installHooks(repoRoot);
 	return {
 		hooksInstalled: true,
 		gitignoreUpdated: await ensureIgnored(repoRoot),
 		configCreated: await createIfAbsent(join(repoRoot, "rpt.config.json"), configTemplate()),
-		pricingCreated: await createIfAbsent(join(rptDirOf(repoRoot), "pricing.json"), pricingTemplate()),
+		pricingCreated: await createPricingFileIfAbsent(repoRoot),
 	};
 }
 
@@ -30,16 +33,13 @@ function configTemplate(): string {
 	return `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`;
 }
 
-function pricingTemplate(): string {
-	// rpt does not know model prices and must not guess them: an empty rates
-	// object is the correct and honest output, not a placeholder to fill in later.
-	return `${JSON.stringify({ version: 1, rates: {} }, null, 2)}\n`;
-}
-
 async function ensureIgnored(repoRoot: string): Promise<boolean> {
 	const path = join(repoRoot, ".gitignore");
 	const current = await readOrEmpty(path);
-	if (current.split("\n").includes(".rpt/")) return false;
+	// Split on \r?\n and trim each line: a file with CRLF endings or trailing
+	// whitespace on the .rpt/ line must still be recognized as already-ignored,
+	// or every run appends a fresh duplicate.
+	if (current.split(/\r?\n/).some((line) => line.trim() === ".rpt/")) return false;
 	const separator = current === "" || current.endsWith("\n") ? "" : "\n";
 	await writeFile(path, `${current}${separator}.rpt/\n`, "utf8");
 	return true;

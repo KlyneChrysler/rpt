@@ -91,9 +91,17 @@ session transcript - is folded into that run:
 Event delivery prefers a small local collector daemon over a Unix socket, so a hook
 invocation can return fast instead of waiting on a file lock; nothing in Plan 1 spawns
 that daemon automatically yet, so in practice every event today is appended directly
-to the log. The daemon acknowledges a frame only once it is actually on disk, so a
-frame it could not decode or could not append is reported as undelivered and the hook
-falls back rather than believing a write that never happened.
+to the log. A frame the daemon could not decode, or could not append, is answered as
+failed rather than acknowledged, so the hook falls back instead of believing a write
+that never happened.
+
+**Known limitation, carried to the next plan.** That acknowledgement is per batch of
+complete lines, not per frame across chunk boundaries: if a frame arrives split across
+more than one TCP chunk, the daemon has no complete line to persist yet and still
+answers `ok` for the empty batch, so the hook believes a delivery that has not
+happened. It is a real hole in the guarantee above, verified against the built daemon.
+Nothing in Plan 1 starts the daemon, so nothing today can reach it - every event goes
+down the direct-append path. It is fixed in the plan that actually starts the daemon.
 
 When both routes fail - no daemon, and the direct append also fails - rpt writes a
 `GapRecorded` event as a last resort, deliberately *without* the file lock the direct
@@ -146,6 +154,24 @@ per the `.gitignore` line `rpt init` adds):
       events.jsonl        # this run's full, checksummed event log
 ```
 
+### Recovering from a damaged run index
+
+A line in `index.jsonl` that is not a well-formed entry - hand-edited, or half-written
+by a crash - is counted as corrupt, reported by `rpt runs`, and **stops new runs from
+starting** until it is removed. That is deliberate, and it is the largest behavioural
+change in the recorder: the next run id is the highest id on file plus one, so while a
+line cannot be read the highest id is not knowable, and allocating anyway would either
+collide with a run already on disk or number from a value that was never read. A run
+numbered on top of a hole is silent, permanent damage; refusing is loud and takes one
+edit to undo.
+
+There is no in-tool repair command in Plan 1. To recover, open `.rpt/index.jsonl` and
+delete the line(s) `rpt runs` is warning about - it is one JSON object per line, and
+the file is a rebuildable cache, not the source of truth (that is each run's event
+log), so deleting a bad line loses nothing but the listing row it was meant to be.
+Until you do, every session records nothing, and each one appends its reason to
+`start-failures.jsonl` so `rpt runs` keeps saying why.
+
 `start-failures.jsonl` is the third of rpt's three records of its own failures, and
 the only one that exists because there was nowhere else to put it. A `GapRecorded`
 event covers a lost event inside a run; a corrupt-line count covers a damaged index
@@ -154,9 +180,19 @@ worth reading, and its absence from the history is otherwise indistinguishable f
 session that simply never happened. `rpt runs` prints a warning naming the count and
 the newest reason whenever this file is non-empty.
 
-A row in the index that never recorded any events is the residue of that same
-failure. `rpt status` reports it as such rather than saying there is no active run;
-the next session that starts successfully supersedes it.
+A row in the index that never recorded any events is either a run still starting -
+the id is reserved before the git snapshot, which on a large repository takes seconds -
+or the residue of a failed start. `rpt status` distinguishes them by whether a reason
+was recorded: a run that is starting is reported as `STARTING` and exits zero, and a
+run that failed to start is reported with its reason and exits non-zero. The next
+session that starts successfully supersedes either.
+
+rpt also never answers "no such run" for a run it has evidence of. A run is *absent*
+only when nothing anywhere claims it existed - no index row, no log. A run with
+surviving log lines or an index row but no readable `RunStarted` (a crash tore the
+start event off the front) is *damaged*, and says so: `rpt events` prints whatever
+survived with the gap warning above it, and `rpt run` reports the damage rather than
+denying the run. Missing evidence is never reported as nonexistence.
 
 Git snapshots themselves are not stored under `.rpt/` - they're plain git commit
 objects, reachable from `refs/rpt/runs/<id>/base` and `refs/rpt/runs/<id>/end`,

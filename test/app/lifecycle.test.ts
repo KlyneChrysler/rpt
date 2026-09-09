@@ -1,11 +1,12 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { endRun } from "../../src/app/endRun.js";
+import { endRun, NoRunInProgressError } from "../../src/app/endRun.js";
 import { loadRun } from "../../src/app/loadRun.js";
 import { recordEvent } from "../../src/app/recordEvent.js";
 import { startRun } from "../../src/app/startRun.js";
-import { activeRun, listRuns } from "../../src/store/runIndex.js";
+import { readEvents } from "../../src/store/eventLog.js";
+import { activeRun, listRuns, readIndex } from "../../src/store/runIndex.js";
 import { rptDirOf } from "../../src/store/paths.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
@@ -76,5 +77,27 @@ describe("run lifecycle", () => {
 		expect(row?.task).toBe("fix the auth bug");
 		expect(row?.task).not.toBe("");
 		expect(row?.task).not.toBe("agent session");
+	});
+
+	// Review finding: two concurrent hook processes must not both read the pointer
+	// as non-null and both proceed to seal the same run - that would append two
+	// AgentStopped events and two ENDED index rows. This fires the race with
+	// Promise.all rather than sequentially, so it actually exercises the lock.
+	it("seals a run exactly once when two endRun calls race for it", async () => {
+		const repo = await makeFixtureRepo();
+		await startRun(repo, { task: "t", transcriptPath: null });
+
+		const results = await Promise.allSettled([endRun(repo), endRun(repo)]);
+		const fulfilled = results.filter((result) => result.status === "fulfilled");
+		const rejected = results.filter((result) => result.status === "rejected");
+		expect(fulfilled).toHaveLength(1);
+		expect(rejected).toHaveLength(1);
+		expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(NoRunInProgressError);
+
+		const { events } = await readEvents(rptDirOf(repo), 1);
+		expect(events.filter((event) => event.kind === "AgentStopped")).toHaveLength(1);
+
+		const { entries } = await readIndex(join(rptDirOf(repo), "index.jsonl"));
+		expect(entries.filter((entry) => entry.id === 1 && entry.state === "ENDED")).toHaveLength(1);
 	});
 });

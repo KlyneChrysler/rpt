@@ -214,6 +214,22 @@ describe("rpt runs: a session that never recorded anything", () => {
 		expect(result.stdout).toMatch(/failed to start/i);
 	});
 
+	// The row a failed start leaves behind is a run with an id and no events: the id
+	// is allocated before the git snapshot that throws. Reporting "no active run"
+	// for it would be exactly the silence this tool exists to remove, so status
+	// names it instead.
+	it("does not let rpt status answer 'no active run' for a run that recorded nothing", async () => {
+		const repo = await repoWithOneEndedRun();
+		const reserved = { id: 7, task: "", state: "RUNNING", startedAt: "2026-09-09T10:00:00.000Z", endedAt: null };
+		await appendFile(join(repo, ".rpt/index.jsonl"), `${JSON.stringify(reserved)}\n`);
+
+		const result = await runCli(["status"], repo);
+
+		expect(result.stdout).not.toContain("no active run");
+		expect(result.stderr).toContain("7");
+		expect(result.exitCode).not.toBe(0);
+	});
+
 	it("carries the failed starts in json too", async () => {
 		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
 		await runHookCommand(bare, JSON.stringify(await fixture("SessionStart")));

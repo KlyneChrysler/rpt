@@ -117,8 +117,8 @@ denser form meant to be read back into an agent's own context).
 | Command | What it does |
 |---|---|
 | `rpt init` | Installs hooks and scaffolds config/pricing files. |
-| `rpt status` | Shows the newest run that is not finished with - the one in progress, or one that has ended but not yet been recorded. |
-| `rpt runs` | Lists every run recorded in this repository. |
+| `rpt status` | Shows the newest run rpt is not done with: the one in progress, or one that has ended but has not been recorded yet. |
+| `rpt runs` | Lists every run recorded in this repository, warning first about corrupt index lines and about sessions that failed to start. |
 | `rpt run <id>` | Shows one run: task, state, claims, and model usage counts. |
 | `rpt events <id>` (alias `rpt replay`) | Prints the full event timeline for a run, warning first if that log has unreadable lines. |
 

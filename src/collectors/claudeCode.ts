@@ -82,7 +82,7 @@ function dispatch(raw: unknown): DraftEvent[] {
 		case "UserPromptSubmit":
 			return [event("PromptSubmitted", { prompt: asString(payload.prompt) })];
 		case "PreToolUse":
-			return [event("ToolCallStarted", toolCallStartedPayload(payload))];
+			return preToolUse(payload);
 		case "PostToolUse":
 			return postToolUse(payload);
 		case "Stop":
@@ -109,6 +109,23 @@ function toolCallStartedPayload(payload: Record<string, unknown>): Record<string
 		// Ruling F: carried so a timeline can pair this start with its completion.
 		toolUseId: asStringOrNull(payload.tool_use_id),
 	};
+}
+
+// Review finding: the fold's claims branch reads CommandStarted, but nothing ever
+// emitted it - a pre-tool hook always became ToolCallStarted regardless of tool,
+// so run.claims.commands was permanently empty for every real run. Symmetric with
+// the CommandCompleted already emitted from the post-tool side below: a Bash
+// pre-tool hook now emits both, minimal and JSON-plain, carrying just the command
+// text and the tool use id so a timeline can pair it with its completion.
+function preToolUse(payload: Record<string, unknown>): DraftEvent[] {
+	const started = event("ToolCallStarted", toolCallStartedPayload(payload));
+	if (asString(payload.tool_name) !== "Bash") return [started];
+	return [started, event("CommandStarted", commandStartedPayload(payload))];
+}
+
+function commandStartedPayload(payload: Record<string, unknown>): Record<string, unknown> {
+	const input = isPlainObject(payload.tool_input) ? payload.tool_input : {};
+	return { command: asString(input.command), toolUseId: asStringOrNull(payload.tool_use_id) };
 }
 
 function postToolUse(payload: Record<string, unknown>): DraftEvent[] {

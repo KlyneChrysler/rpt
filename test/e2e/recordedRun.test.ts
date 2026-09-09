@@ -36,6 +36,15 @@ describe("a full recorded run", () => {
 		expect((await loadRun(repo, 1)).claims.mutatedPaths).toEqual(["auth.ts"]);
 	});
 
+	// Review finding: run.claims.commands was silently empty for every real run -
+	// the fold's CommandStarted branch existed but nothing ever emitted that
+	// event kind, so this bash step used to drive that path with nothing
+	// asserting on the result. Pinned here so it cannot regress unseen.
+	it("records the agent's claim about the command it ran", async () => {
+		const { repo } = await recordedRun();
+		expect((await loadRun(repo, 1)).claims.commands).toEqual(["pnpm test"]);
+	});
+
 	it("observes the same file independently in the git diff", async () => {
 		const { repo } = await recordedRun();
 		const run = await loadRun(repo, 1);

@@ -95,6 +95,21 @@ describe("claudeCodeAdapter.normalize", () => {
 		expect(completed?.payload.response).toEqual({ completed: true, responseKeys: ["filePath", "type"] });
 	});
 
+	// Review finding: the fold's claims branch reads CommandStarted, but nothing
+	// emitted it before this fix, so run.claims.commands was silently empty for
+	// every real run - a confident wrong zero rather than a visible gap.
+	it("emits CommandStarted alongside ToolCallStarted for a Bash pre-tool hook", async () => {
+		const events = normalize(await fixture("PreToolUse.Bash"));
+		expect(events.map((event) => event.kind)).toEqual(["ToolCallStarted", "CommandStarted"]);
+		const started = events.find((event) => event.kind === "CommandStarted");
+		expect(started?.payload).toEqual({ command: "echo done", toolUseId: "toolu_01QpvqpHjkF3fXz9XmGAQ4fm" });
+	});
+
+	it("does not emit CommandStarted for a non-Bash pre-tool hook", async () => {
+		const events = normalize(await fixture("PreToolUse.Write"));
+		expect(events.map((event) => event.kind)).toEqual(["ToolCallStarted"]);
+	});
+
 	it("emits CommandCompleted for a Bash tool result", async () => {
 		const events = normalize(await fixture("PostToolUse.Bash"));
 		expect(events.map((event) => event.kind)).toContain("CommandCompleted");

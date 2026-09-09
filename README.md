@@ -45,8 +45,10 @@ file exists and isn't valid JSON, `rpt init` refuses to touch it rather than gue
 adds `.rpt/` to `.gitignore`, and scaffolds two files if they don't already exist:
 
 - `rpt.config.json` - test/coverage commands, sensitive-path globs and risk
-  thresholds. Nothing in Plan 1 reads the risk-related fields yet; they exist for
-  the verification plan that comes next.
+  thresholds. The whole file is inert in Plan 1: `loadConfig` parses and validates
+  it, but nothing calls `loadConfig` anywhere in this codebase yet. It's scaffolded
+  now so the shape is settled for the verification plan that comes next, not
+  because anything reads it today.
 - `.rpt/pricing.json` - **ships empty.** rpt does not know what any model costs and
   will not guess. A model with no entry here reports no cost for its usage, not an
   invented one. Fill in `input`, `output`, `cacheRead` and `cacheCreate` (USD per

@@ -1,19 +1,17 @@
 import { createServer, type Server, type Socket } from "node:net";
-import { mkdir, rm } from "node:fs/promises";
+import { prepareSocketPath, removeSocketPath } from "../store/daemonSocket.js";
 import { appendEvent } from "../store/eventLog.js";
-import { decode, FAILED_REPLY, OK_REPLY, socketPathOf } from "./protocol.js";
+import { decode, FAILED_REPLY, OK_REPLY } from "./protocol.js";
 
 export type Daemon = { socketPath: string; close(): Promise<void> };
 
 const TRACE_MAX_CHARS = 200;
 
 export async function startDaemon(rptDir: string): Promise<Daemon> {
-	await mkdir(rptDir, { recursive: true });
-	const socketPath = socketPathOf(rptDir);
-	await rm(socketPath, { force: true });
+	const socketPath = await prepareSocketPath(rptDir);
 	const server = createServer((socket) => handle(rptDir, socket));
 	await listen(server, socketPath);
-	return { socketPath, close: () => close(server, socketPath) };
+	return { socketPath, close: () => close(server, rptDir) };
 }
 
 function handle(rptDir: string, socket: Socket): void {
@@ -77,7 +75,7 @@ function listen(server: Server, socketPath: string): Promise<void> {
 	});
 }
 
-async function close(server: Server, socketPath: string): Promise<void> {
+async function close(server: Server, rptDir: string): Promise<void> {
 	await new Promise<void>((resolve) => server.close(() => resolve()));
-	await rm(socketPath, { force: true });
+	await removeSocketPath(rptDir);
 }

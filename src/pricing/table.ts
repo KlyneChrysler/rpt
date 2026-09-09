@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { z } from "zod";
+import { pricingFileOf } from "../store/paths.js";
 import { ratesSchema, type PricingTable } from "./cost.js";
 
 export const EMPTY_PRICING: PricingTable = { version: 1, rates: {} };
@@ -15,7 +15,7 @@ const pricingFileSchema = z.object({
 
 export async function loadPricing(rptDir: string): Promise<PricingTable> {
 	try {
-		const text = await readFile(join(rptDir, "pricing.json"), "utf8");
+		const text = await readFile(pricingFileOf(rptDir), "utf8");
 		return parsePricing(text);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return EMPTY_PRICING;

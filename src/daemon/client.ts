@@ -1,7 +1,8 @@
 import { connect } from "node:net";
 import type { DraftEvent, RunId } from "../domain/events.js";
 import { appendEvent, appendGapUnlocked } from "../store/eventLog.js";
-import { encode, OK_REPLY, socketPathOf } from "./protocol.js";
+import { socketPathOf } from "../store/paths.js";
+import { encode, OK_REPLY } from "./protocol.js";
 
 const SEND_TIMEOUT_MS = 200;
 

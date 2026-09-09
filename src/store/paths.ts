@@ -16,3 +16,17 @@ export function runDirOf(rptDir: string, runId: RunId): string {
 export function eventLogOf(rptDir: string, runId: RunId): string {
 	return join(runDirOf(rptDir, runId), "events.jsonl");
 }
+
+export function currentPointerOf(rptDir: string): string {
+	return join(rptDir, "current");
+}
+
+export function pricingFileOf(rptDir: string): string {
+	return join(rptDir, "pricing.json");
+}
+
+// The daemon owns the server; the store owns the file, because the file lives
+// under .rpt and nothing outside this layer may decide where anything there goes.
+export function socketPathOf(rptDir: string): string {
+	return join(rptDir, "daemon.sock");
+}

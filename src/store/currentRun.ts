@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import type { RunId } from "../domain/events.js";
 import { withInProcessLock } from "./inProcessLock.js";
+import { currentPointerOf } from "./paths.js";
 
 export type CurrentRunTransition<T> = (current: RunId | null) => Promise<{ next: RunId | null; result: T }>;
 
@@ -50,7 +50,7 @@ function parsePointer(raw: string): RunId | null {
 
 async function preparedPointer(rptDir: string): Promise<string> {
 	await mkdir(rptDir, { recursive: true });
-	const path = join(rptDir, "current");
+	const path = currentPointerOf(rptDir);
 	try {
 		await writeFile(path, "", { flag: "wx" });
 	} catch (error) {

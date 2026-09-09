@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { DraftEvent, RunId } from "../domain/events.js";
 
 export type Frame = { runId: RunId; draft: DraftEvent };
@@ -7,10 +6,6 @@ export type Frame = { runId: RunId; draft: DraftEvent };
 // the client treats every other reply, and no reply at all, as undelivered.
 export const OK_REPLY = "ok";
 export const FAILED_REPLY = "failed";
-
-export function socketPathOf(rptDir: string): string {
-	return join(rptDir, "daemon.sock");
-}
 
 export function encode(frame: Frame): string {
 	return `${JSON.stringify(frame)}\n`;

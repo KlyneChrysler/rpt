@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { DraftEvent } from "../../src/domain/events.js";
-import { appendEvent, readEvents } from "../../src/store/eventLog.js";
+import { appendEvent, MAX_PAYLOAD_BYTES, readEvents } from "../../src/store/eventLog.js";
 import { runDirOf } from "../../src/store/paths.js";
 
 let rptDir = "";
@@ -42,6 +42,30 @@ describe("appendEvent", () => {
 		expect(event.payload.truncated).toBe(true);
 		expect(JSON.stringify(event).length).toBeLessThan(9000);
 	});
+
+	it("bounds a payload made of many small fields that individually stay under the per-field cap", async () => {
+		const payload = Object.fromEntries(Array.from({ length: 400 }, (_, i) => [`f${i}`, "y".repeat(40)]));
+		const event = await appendEvent(rptDir, 1, draft("CommandCompleted", payload));
+		expect(event.payload.truncated).toBe(true);
+		expect(Buffer.byteLength(JSON.stringify(event.payload), "utf8")).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+	});
+
+	it("bounds a payload carrying a large non-string value", async () => {
+		const payload = { data: Array.from({ length: 5000 }, (_, i) => i) };
+		const event = await appendEvent(rptDir, 1, draft("CommandCompleted", payload));
+		expect(event.payload.truncated).toBe(true);
+		expect(Buffer.byteLength(JSON.stringify(event.payload), "utf8")).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+		expect(typeof event.payload.originalBytes).toBe("number");
+		expect(event.payload.originalKeys).toEqual(["data"]);
+	});
+
+	it("truncates a multi-byte string to within its byte cap without splitting a character", async () => {
+		const event = await appendEvent(rptDir, 1, draft("CommandCompleted", { note: "\u{1F600}".repeat(3000) }));
+		expect(event.payload.truncated).toBe(true);
+		const note = event.payload.note as string;
+		expect(Buffer.byteLength(note, "utf8")).toBeLessThanOrEqual(1024);
+		expect(note).not.toContain("�");
+	});
 });
 
 describe("readEvents", () => {
@@ -71,6 +95,15 @@ describe("readEvents", () => {
 		await writeFile(path, tampered);
 		const { events, gapCount } = await readEvents(rptDir, 1);
 		expect(events).toHaveLength(0);
+		expect(gapCount).toBe(1);
+	});
+
+	it("does not swallow the next valid append when it lands right after a torn fragment", async () => {
+		await appendEvent(rptDir, 1, draft("RunStarted", { task: "t" }));
+		await appendFile(join(runDirOf(rptDir, 1), "events.jsonl"), '{"runId":1,"seq":1,"kind":"Fi');
+		await appendEvent(rptDir, 1, draft("FileMutated", { path: "a.ts" }));
+		const { events, gapCount } = await readEvents(rptDir, 1);
+		expect(events).toHaveLength(2);
 		expect(gapCount).toBe(1);
 	});
 });

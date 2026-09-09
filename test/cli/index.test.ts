@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -99,5 +99,32 @@ describe("rpt status: format-aware emptiness", () => {
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout.trim()).toBe("no active run");
+	});
+});
+
+// The reviewer reproduced this against the built binary: one structurally-wrong
+// line in the index used to crash the listing permanently and poison the next id
+// allocation, with nothing but a stderr line in a hook nobody reads to show for it.
+describe("rpt runs: one bad index line does not wedge the recorder", () => {
+	it("still lists the good runs and says the index is damaged", async () => {
+		const repo = await repoWithOneEndedRun();
+		await appendFile(join(repo, ".rpt/index.jsonl"), "42\n");
+
+		const result = await runCli(["runs"], repo);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toMatch(/corrupt/i);
+		expect(result.stdout).toContain("ENDED");
+	});
+
+	it("emits parseable json naming the corrupt line count", async () => {
+		const repo = await repoWithOneEndedRun();
+		await appendFile(join(repo, ".rpt/index.jsonl"), "42\n");
+
+		const result = await runCli(["runs", "--format", "json"], repo);
+
+		const parsed = JSON.parse(result.stdout);
+		expect(parsed.corruptLines).toBe(1);
+		expect(parsed.runs).toHaveLength(1);
 	});
 });

@@ -1,9 +1,10 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import lockfile from "proper-lockfile";
+import { z } from "zod";
 import type { RunId } from "../domain/events.js";
-import { isTerminal, type RunState } from "../domain/state.js";
+import { isTerminal, RUN_STATES, type RunState } from "../domain/state.js";
 import { withInProcessLock } from "./inProcessLock.js";
+import { runIndexOf } from "./paths.js";
 
 export type RunIndexEntry = {
 	id: RunId;
@@ -14,6 +15,28 @@ export type RunIndexEntry = {
 };
 
 export type IndexReadResult = { entries: RunIndexEntry[]; corruptLines: number };
+
+// Validated as untrusted data, because that is what it is: a hand-edited or
+// half-written line is valid JSON far more often than it is a valid entry, and a
+// row that parses but has no id, no task or a state rpt has never heard of used to
+// count as a good row. That is the shape of the bug this schema closes - it is not
+// enough for the parse not to throw.
+const entrySchema = z.object({
+	id: z.number().int(),
+	task: z.string(),
+	state: z.enum(RUN_STATES),
+	startedAt: z.string(),
+	endedAt: z.string().nullable(),
+});
+
+export class CorruptIndexError extends Error {
+	constructor(path: string, corruptLines: number) {
+		super(
+			`refusing to start a run: ${path} has ${corruptLines} corrupt line(s), so the next run id cannot be determined - remove the bad line(s) to recover`,
+		);
+		this.name = "CorruptIndexError";
+	}
+}
 
 export async function allocateRunId(rptDir: string): Promise<RunId> {
 	const path = await preparedIndex(rptDir);
@@ -28,7 +51,13 @@ async function allocateRunIdLocked(path: string): Promise<RunId> {
 	const release = await lockfile.lock(path, { retries: { retries: 20, minTimeout: 5, maxTimeout: 100 } });
 	try {
 		await ensureTrailingNewline(path);
-		const { entries } = await readIndex(path);
+		const { entries, corruptLines } = await readIndexAt(path);
+		// Allocating on top of a hole is how one bad line becomes permanent damage:
+		// the highest id is no longer knowable, so the next run either collides with
+		// a run already on disk or is numbered from a value that was never read.
+		// Refusing is loud, visible in the same warning the listing shows, and
+		// recoverable by editing the line out. Allocating is silent and is not.
+		if (corruptLines > 0) throw new CorruptIndexError(path, corruptLines);
 		const highest = entries.reduce((max, entry) => Math.max(max, entry.id), 0);
 		const id = highest + 1;
 		await appendFile(path, `${JSON.stringify(reserved(id))}\n`, "utf8");
@@ -54,7 +83,7 @@ async function upsertRunLocked(path: string, entry: RunIndexEntry): Promise<void
 }
 
 export async function listRuns(rptDir: string): Promise<RunIndexEntry[]> {
-	const { entries } = await readIndex(join(rptDir, "index.jsonl"));
+	const { entries } = await readIndex(rptDir);
 	return latestEntries(entries);
 }
 
@@ -85,7 +114,7 @@ function reserved(id: RunId): RunIndexEntry {
 
 async function preparedIndex(rptDir: string): Promise<string> {
 	await mkdir(rptDir, { recursive: true });
-	const path = join(rptDir, "index.jsonl");
+	const path = runIndexOf(rptDir);
 	try {
 		await writeFile(path, "", { flag: "wx" });
 	} catch (error) {
@@ -98,7 +127,11 @@ async function preparedIndex(rptDir: string): Promise<string> {
 // corrupt line must not make the tool unusable. But it also must not vanish without a trace:
 // a run silently dropped here is a run activeRun can no longer see to gate. corruptLines lets
 // every caller know the count, and a non-zero count is also reported to stderr immediately.
-export async function readIndex(path: string): Promise<IndexReadResult> {
+export async function readIndex(rptDir: string): Promise<IndexReadResult> {
+	return readIndexAt(runIndexOf(rptDir));
+}
+
+async function readIndexAt(path: string): Promise<IndexReadResult> {
 	const text = await readOrEmpty(path);
 	const lines = text.split("\n").filter((line) => line !== "");
 	const entries: RunIndexEntry[] = [];
@@ -113,11 +146,14 @@ export async function readIndex(path: string): Promise<IndexReadResult> {
 }
 
 function parseEntry(line: string): RunIndexEntry | null {
+	let parsed: unknown;
 	try {
-		return JSON.parse(line) as RunIndexEntry;
+		parsed = JSON.parse(line);
 	} catch {
 		return null;
 	}
+	const entry = entrySchema.safeParse(parsed);
+	return entry.success ? entry.data : null;
 }
 
 function warnCorruptLines(path: string, corruptLines: number): void {

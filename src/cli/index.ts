@@ -31,7 +31,7 @@ program.command("status").description("show the active run").action(async () => 
 });
 
 program.command("runs").description("list runs").action(async () => {
-	const { entries, corruptLines } = await readIndex(join(rptDirOf(process.cwd()), "index.jsonl"));
+	const { entries, corruptLines } = await readIndex(rptDirOf(process.cwd()));
 	process.stdout.write(`${renderRunList({ entries: latestEntries(entries), corruptLines }, formatOf())}\n`);
 });
 

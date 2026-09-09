@@ -105,7 +105,7 @@ describe("handleHook", () => {
 		const { events } = await readEvents(rptDirOf(repo), 1);
 		expect(events.filter((event) => event.kind === "AgentStopped")).toHaveLength(1);
 
-		const { entries } = await readIndex(join(rptDirOf(repo), "index.jsonl"));
+		const { entries } = await readIndex(rptDirOf(repo));
 		expect(entries.filter((entry) => entry.id === 1 && entry.state === "ENDED")).toHaveLength(1);
 	});
 });

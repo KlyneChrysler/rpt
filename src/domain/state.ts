@@ -1,14 +1,21 @@
-export type RunState =
-	| "RUNNING"
-	| "ENDED"
-	| "VERIFYING"
-	| "VERIFIED"
-	| "FAILED"
-	| "UNVERIFIED"
-	| "AWAITING_APPROVAL"
-	| "APPROVED"
-	| "REJECTED"
-	| "RECORDED";
+// The states exist at runtime, not just in the type system: an index row read
+// back from disk is untrusted JSON, and "is this a state rpt knows" is a question
+// only a value can answer. Deriving the type from the list keeps the two from
+// drifting apart the way a hand-maintained second copy would.
+export const RUN_STATES = [
+	"RUNNING",
+	"ENDED",
+	"VERIFYING",
+	"VERIFIED",
+	"FAILED",
+	"UNVERIFIED",
+	"AWAITING_APPROVAL",
+	"APPROVED",
+	"REJECTED",
+	"RECORDED",
+] as const;
+
+export type RunState = (typeof RUN_STATES)[number];
 
 const ALLOWED: Readonly<Record<RunState, readonly RunState[]>> = {
 	RUNNING: ["ENDED"],

@@ -5,6 +5,10 @@ export function rptDirOf(repoRoot: string): string {
 	return join(repoRoot, ".rpt");
 }
 
+export function runIndexOf(rptDir: string): string {
+	return join(rptDir, "index.jsonl");
+}
+
 export function runDirOf(rptDir: string, runId: RunId): string {
 	return join(rptDir, "runs", String(runId));
 }

@@ -27,6 +27,26 @@ describe("allocateRunId", () => {
 		expect(await allocateRunId(rptDir)).toBe(1);
 	});
 
+	// Allocating on top of a hole is how one bad line becomes permanent: the highest
+	// id can no longer be known, so the next run either collides with a run already
+	// on disk or is numbered from a value that was never read. Refusing is loud and
+	// recoverable; allocating is silent and is not.
+	it("refuses to allocate while the index has corrupt lines", async () => {
+		await upsertRun(rptDir, entry(1));
+		await appendFile(join(rptDir, "index.jsonl"), "42\n");
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			await expect(allocateRunId(rptDir)).rejects.toThrow(/corrupt/i);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("allocates an integer id, never a NaN, once the index is clean again", async () => {
+		await upsertRun(rptDir, entry(1));
+		expect(Number.isInteger(await allocateRunId(rptDir))).toBe(true);
+	});
+
 	it("never repeats an id under concurrency", async () => {
 		const ids = await Promise.all(Array.from({ length: 20 }, () => allocateRunId(rptDir)));
 		expect(new Set(ids).size).toBe(20);
@@ -58,7 +78,7 @@ describe("latestEntries", () => {
 	it("is what listRuns uses internally, so the two never drift", async () => {
 		await upsertRun(rptDir, entry(1));
 		await upsertRun(rptDir, entry(1, { state: "ENDED" }));
-		const { entries } = await readIndex(join(rptDir, "index.jsonl"));
+		const { entries } = await readIndex(rptDir);
 		expect(await listRuns(rptDir)).toEqual(latestEntries(entries));
 	});
 
@@ -89,16 +109,58 @@ describe("readIndex", () => {
 		await upsertRun(rptDir, entry(1));
 		await appendFile(join(rptDir, "index.jsonl"), "not json\n");
 		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-		const { entries, corruptLines } = await readIndex(join(rptDir, "index.jsonl"));
+		const { entries, corruptLines } = await readIndex(rptDir);
 		spy.mockRestore();
 		expect(entries.map((e) => e.id)).toEqual([1]);
+		expect(corruptLines).toBe(1);
+	});
+
+	// Valid JSON that is not a well-formed entry is the dangerous case: it used to
+	// pass the parse and count as a good row, so the corrupt-line count stayed zero
+	// and every reader downstream trusted a row with no id, no state and no task.
+	it("counts a bare number as corrupt rather than as an entry", async () => {
+		await upsertRun(rptDir, entry(1));
+		await appendFile(join(rptDir, "index.jsonl"), "42\n");
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		const { entries, corruptLines } = await readIndex(rptDir);
+		spy.mockRestore();
+		expect(entries.map((e) => e.id)).toEqual([1]);
+		expect(corruptLines).toBe(1);
+	});
+
+	it("counts a row whose id is not an integer as corrupt", async () => {
+		await appendFile(
+			join(rptDir, "index.jsonl"),
+			`${JSON.stringify({ ...entry(1), id: "1" })}\n${JSON.stringify({ ...entry(2), id: 1.5 })}\n`,
+		);
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		const { entries, corruptLines } = await readIndex(rptDir);
+		spy.mockRestore();
+		expect(entries).toEqual([]);
+		expect(corruptLines).toBe(2);
+	});
+
+	it("counts a row carrying an unknown state as corrupt", async () => {
+		await appendFile(join(rptDir, "index.jsonl"), `${JSON.stringify({ ...entry(1), state: "WAT" })}\n`);
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		const { entries, corruptLines } = await readIndex(rptDir);
+		spy.mockRestore();
+		expect(entries).toEqual([]);
+		expect(corruptLines).toBe(1);
+	});
+
+	it("counts a row missing a required field as corrupt", async () => {
+		await appendFile(join(rptDir, "index.jsonl"), `${JSON.stringify({ id: 1, task: "t" })}\n`);
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		const { corruptLines } = await readIndex(rptDir);
+		spy.mockRestore();
 		expect(corruptLines).toBe(1);
 	});
 
 	it("reports zero corrupt lines for a wholly valid index", async () => {
 		await upsertRun(rptDir, entry(1));
 		await upsertRun(rptDir, entry(2));
-		const { corruptLines } = await readIndex(join(rptDir, "index.jsonl"));
+		const { corruptLines } = await readIndex(rptDir);
 		expect(corruptLines).toBe(0);
 	});
 
@@ -106,7 +168,7 @@ describe("readIndex", () => {
 		await upsertRun(rptDir, entry(1));
 		await appendFile(join(rptDir, "index.jsonl"), "not json\nalso not json\n");
 		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-		await expect(readIndex(join(rptDir, "index.jsonl"))).resolves.toMatchObject({ corruptLines: 2 });
+		await expect(readIndex(rptDir)).resolves.toMatchObject({ corruptLines: 2 });
 		spy.mockRestore();
 	});
 });
@@ -116,7 +178,7 @@ describe("torn fragment recovery", () => {
 		await upsertRun(rptDir, entry(1));
 		await appendFile(join(rptDir, "index.jsonl"), '{"id":2,"task":"broken"');
 		await upsertRun(rptDir, entry(2));
-		const { entries, corruptLines } = await readIndex(join(rptDir, "index.jsonl"));
+		const { entries, corruptLines } = await readIndex(rptDir);
 		expect(entries.map((e) => e.id).sort()).toEqual([1, 2]);
 		expect(corruptLines).toBe(1);
 	});

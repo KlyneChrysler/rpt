@@ -4,9 +4,14 @@ import { promisify } from "node:util";
 const run = promisify(execFile);
 
 export class GitError extends Error {
-	constructor(args: string[], stderr: string) {
-		super(`git ${args.join(" ")} failed: ${stderr.trim()}`);
+	readonly exitCode: number | string | null;
+	readonly stderr: string;
+
+	constructor(args: string[], exitCode: number | string | null, stderr: string, fallback: string) {
+		super(`git ${args.join(" ")} failed: ${stderr.trim() || fallback}`);
 		this.name = "GitError";
+		this.exitCode = exitCode;
+		this.stderr = stderr;
 	}
 }
 
@@ -23,6 +28,7 @@ export async function git(
 		});
 		return stdout.trimEnd();
 	} catch (error) {
-		throw new GitError(args, String((error as { stderr?: string }).stderr ?? (error as Error).message));
+		const failure = error as { code?: number | string; stderr?: string; message: string };
+		throw new GitError(args, failure.code ?? null, failure.stderr ?? "", failure.message);
 	}
 }

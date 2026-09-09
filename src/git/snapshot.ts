@@ -8,11 +8,19 @@ export type SnapshotLabel = "base" | "end";
 
 export async function headSha(repo: string): Promise<string | null> {
 	try {
-		return await git(repo, ["rev-parse", "HEAD"]);
+		return await git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"]);
 	} catch (error) {
-		if (error instanceof GitError) return null;
+		if (error instanceof GitError && isUnresolvableRef(error)) return null;
 		throw error;
 	}
+}
+
+// `rev-parse --verify --quiet` exits 1 with empty stderr precisely when the
+// ref cannot be resolved (e.g. no commits yet). Any other shape - a different
+// exit code, or output on stderr - is a genuine failure (missing git binary,
+// bad path, corrupted repo, permissions) and must not be swallowed as "no commits".
+function isUnresolvableRef(error: GitError): boolean {
+	return error.exitCode === 1 && error.stderr.trim() === "";
 }
 
 export async function createSnapshot(

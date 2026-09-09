@@ -51,4 +51,9 @@ describe("headSha", () => {
 		await git(repo, ["config", "user.name", "rpt test"]);
 		expect(await headSha(repo)).toBeNull();
 	});
+
+	it("throws rather than returning null when the path is not a git repository", async () => {
+		const notARepo = await mkdtemp(join(tmpdir(), "rpt-notrepo-"));
+		await expect(headSha(notARepo)).rejects.toThrow();
+	});
 });

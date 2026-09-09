@@ -147,6 +147,28 @@ describe("runVerifiers", () => {
 		expect(results[1]?.status).toBe("passed");
 	});
 
+	it("handles a result with a throwing id getter, keeping other verifiers running", async () => {
+		const resultWithThrowingId = {
+			get id() {
+				throw new Error("id getter exploded");
+			},
+			status: "failed" as const,
+			reason: null,
+			facts: {},
+		};
+
+		const results = await runVerifiers(
+			[
+				verifier("bad", async () => resultWithThrowingId as any),
+				verifier("ok", async () => ({ id: "ok", status: "passed", reason: null, facts: {} })),
+			],
+			context,
+		);
+		expect(results[0]?.status).toBe("skipped");
+		expect(results[0]?.reason).toBeTruthy();
+		expect(results[1]?.status).toBe("passed");
+	});
+
 	it("passed() creates a passed result with default empty facts", () => {
 		const result = passed("test-id");
 		expect(result.id).toBe("test-id");

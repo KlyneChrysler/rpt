@@ -46,10 +46,18 @@ async function runOne(verifier: Verifier, context: RunContext): Promise<Verifier
 		}
 		return skipped(verifier.id, `verifier threw: ${message}`);
 	}
+
+	let resultId: string;
+	try {
+		resultId = result.id;
+	} catch {
+		resultId = "[id getter threw]";
+	}
+
 	try {
 		return assertExplained(result);
 	} catch (error) {
-		return skipped(verifier.id, `verifier ${result.id} violated contract: ${(error as Error).message}`);
+		return skipped(verifier.id, `verifier ${resultId} violated contract: ${(error as Error).message}`);
 	}
 }
 

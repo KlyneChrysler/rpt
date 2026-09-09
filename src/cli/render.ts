@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../domain/events.js";
+import type { AgentEvent, RunId } from "../domain/events.js";
 import type { AgentRun } from "../domain/run.js";
 import type { IndexReadResult } from "../store/runIndex.js";
 import type { StartFailure } from "../store/startFailures.js";
@@ -10,13 +10,31 @@ export function renderRun(run: AgentRun, format: OutputFormat): string {
 	return textLines(run).join("\n");
 }
 
+// A run that has been given an id but has not recorded its first event yet. Every
+// normal session passes through this window - the index row is reserved before the
+// git snapshot, which on a large repository takes seconds - so it is a state to
+// report, not a failure to raise. It is deliberately not an AgentRun: there is no
+// event log to fold, so there is nothing honest to put in one.
+export type PendingRun = { pending: "starting"; id: RunId };
+
 // No active run is a normal, common outcome (right after `rpt init`, in CI, between
 // agent sessions) - not an error - so it goes through the same format switch as a
 // real run rather than a bare stdout string that would break json piping.
-export function renderActiveRun(run: AgentRun | null, format: OutputFormat): string {
-	if (run !== null) return renderRun(run, format);
-	if (format === "json") return JSON.stringify({ active: null }, null, 2);
-	return "no active run";
+export function renderActiveRun(run: AgentRun | PendingRun | null, format: OutputFormat): string {
+	if (run === null) {
+		return format === "json" ? JSON.stringify({ active: null }, null, 2) : "no active run";
+	}
+	return isPending(run) ? renderPending(run, format) : renderRun(run, format);
+}
+
+function isPending(run: AgentRun | PendingRun): run is PendingRun {
+	return "pending" in run;
+}
+
+function renderPending(run: PendingRun, format: OutputFormat): string {
+	if (format === "json") return JSON.stringify({ active: { id: run.id, pending: run.pending } }, null, 2);
+	if (format === "agent") return `RUN ${run.id} STARTING | no events recorded yet`;
+	return [`RUN ${run.id}  STARTING`, "", "  the run has an id but has not recorded its first event yet"].join("\n");
 }
 
 // Everything that makes the list less than the whole truth travels with it:

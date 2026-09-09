@@ -80,6 +80,24 @@ describe("renderActiveRun", () => {
 	it("emits parseable json when a run is active", () => {
 		expect(JSON.parse(renderActiveRun(run, "json")).id).toBe(1842);
 	});
+
+	// A run that has an id but no first event yet is a normal, transient state that
+	// every session passes through, so it renders as a state rather than raising.
+	it("names a run that is still starting in text form", () => {
+		const output = renderActiveRun({ pending: "starting", id: 9 }, "text");
+		expect(output).toMatch(/starting/i);
+		expect(output).toContain("9");
+		expect(output).not.toMatch(/no active run/i);
+	});
+
+	it("names a run that is still starting in agent form", () => {
+		expect(renderActiveRun({ pending: "starting", id: 9 }, "agent")).toMatch(/starting/i);
+	});
+
+	it("emits parseable json for a run that is still starting", () => {
+		const parsed = JSON.parse(renderActiveRun({ pending: "starting", id: 9 }, "json"));
+		expect(parsed.active).toEqual({ id: 9, pending: "starting" });
+	});
 });
 
 describe("renderTimeline", () => {

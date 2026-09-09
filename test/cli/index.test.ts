@@ -1,10 +1,13 @@
 import { execFile, execFileSync } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { handleHook, runHookCommand } from "../../src/cli/hook.js";
+import { allocateRunId } from "../../src/store/runIndex.js";
+import { rptDirOf } from "../../src/store/paths.js";
+import { recordStartFailure } from "../../src/store/startFailures.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -217,11 +220,13 @@ describe("rpt runs: a session that never recorded anything", () => {
 	// The row a failed start leaves behind is a run with an id and no events: the id
 	// is allocated before the git snapshot that throws. Reporting "no active run"
 	// for it would be exactly the silence this tool exists to remove, so status
-	// names it instead.
+	// names it instead. The recorded reason is what separates this from a run that
+	// is merely still starting, which is a normal state and not an error.
 	it("does not let rpt status answer 'no active run' for a run that recorded nothing", async () => {
 		const repo = await repoWithOneEndedRun();
-		const reserved = { id: 7, task: "", state: "RUNNING", startedAt: "2026-09-09T10:00:00.000Z", endedAt: null };
+		const reserved = { id: 7, task: "", state: "RUNNING", startedAt: "2020-01-01T00:00:00.000Z", endedAt: null };
 		await appendFile(join(repo, ".rpt/index.jsonl"), `${JSON.stringify(reserved)}\n`);
+		await recordStartFailure(rptDirOf(repo), "snapshot failed");
 
 		const result = await runCli(["status"], repo);
 
@@ -237,5 +242,86 @@ describe("rpt runs: a session that never recorded anything", () => {
 		const result = await runCli(["runs", "--format", "json"], bare);
 
 		expect(JSON.parse(result.stdout).startFailures).toHaveLength(1);
+	});
+});
+
+// The run this whole tool exists for: a crash tore the RunStarted line off the
+// front of the log. Every surviving event is still evidence, and the timeline is
+// the surface that shows it. Answering "no such run" here is missing evidence
+// reading as nonexistence, which inverts the project's premise.
+async function repoWithATornStartEvent(): Promise<string> {
+	const repo = await repoWithOneEndedRun();
+	const logPath = join(repo, ".rpt/runs/1/events.jsonl");
+	const lines = (await readFile(logPath, "utf8")).split("\n");
+	lines[0] = '{"runId":1,"seq":0,"kind":"RunSta';
+	await writeFile(logPath, lines.join("\n"));
+	return repo;
+}
+
+describe("a run whose start event was lost to a torn write", () => {
+	it("prints the timeline that survived rather than denying the run exists", async () => {
+		const repo = await repoWithATornStartEvent();
+
+		const result = await runCli(["events", "1"], repo);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("AgentStopped");
+		expect(result.stdout).toMatch(/gap/i);
+	});
+
+	it("tells rpt run that the run is damaged, not that it is absent", async () => {
+		const repo = await repoWithATornStartEvent();
+
+		const result = await runCli(["run", "1"], repo);
+
+		expect(result.stderr).toMatch(/damaged/i);
+		expect(result.stderr).not.toMatch(/no run 1 found/i);
+	});
+
+	it("does not let the listing and the detail commands disagree about it existing", async () => {
+		const repo = await repoWithATornStartEvent();
+
+		const listed = JSON.parse((await runCli(["runs", "--format", "json"], repo)).stdout);
+		const detail = await runCli(["run", "1"], repo);
+
+		expect(listed.runs.map((entry: { id: number }) => entry.id)).toContain(1);
+		expect(detail.stderr).not.toMatch(/no run 1 found/i);
+	});
+
+	it("still says a genuinely absent run is absent", async () => {
+		const repo = await repoWithATornStartEvent();
+
+		const result = await runCli(["events", "999"], repo);
+
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr).toMatch(/no run 999 found/i);
+	});
+});
+
+// The window between the index row being reserved and RunStarted being appended is
+// a normal part of every session, and on a large repository the git snapshot in
+// between takes seconds. A run that is starting is not a run that failed to start.
+describe("rpt status during a normal run start", () => {
+	it("reports the run as starting, and exits zero", async () => {
+		const repo = await makeFixtureRepo();
+		await allocateRunId(rptDirOf(repo));
+
+		const result = await runCli(["status"], repo);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toMatch(/starting/i);
+		expect(result.stdout).not.toMatch(/failed to start/i);
+	});
+
+	it("still reports a start that actually failed", async () => {
+		const repo = await makeFixtureRepo();
+		await allocateRunId(rptDirOf(repo));
+		await recordStartFailure(rptDirOf(repo), "not a git repository");
+
+		const result = await runCli(["status"], repo);
+
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr).toMatch(/failed to start/i);
+		expect(result.stderr).toContain("not a git repository");
 	});
 });

@@ -1,17 +1,15 @@
 #!/usr/bin/env node
-import { join } from "node:path";
 import { Command } from "commander";
-import type { AgentEvent } from "../domain/events.js";
-import { projectRun, type AgentRun } from "../domain/run.js";
+import type { AgentRun } from "../domain/run.js";
 import { loadRun } from "../app/loadRun.js";
 import { initRepo } from "../app/initRepo.js";
 import { readEvents } from "../store/eventLog.js";
 import { findRepoRoot, rptDirOf } from "../store/paths.js";
-import { readStartFailures } from "../store/startFailures.js";
-import { latestEntries, openRun, readIndex } from "../store/runIndex.js";
+import { readStartFailures, type StartFailure } from "../store/startFailures.js";
+import { latestEntries, openRun, readIndex, type RunIndexEntry } from "../store/runIndex.js";
 import { runHookCommand } from "./hook.js";
 import type { OutputFormat } from "./format.js";
-import { renderActiveRun, renderRun, renderRunList, renderTimeline } from "./render.js";
+import { renderActiveRun, renderRun, renderRunList, renderTimeline, type PendingRun } from "./render.js";
 
 const program = new Command();
 program.name("rpt").description("AI agent flight recorder and verification engine");
@@ -38,8 +36,7 @@ program.command("hook").description("internal: consume an agent hook payload").a
 program.command("status").description("show the run in progress, if any").action(async () => {
 	const root = await repoRoot();
 	const entry = await openRun(rptDirOf(root));
-	const run = entry === null ? null : await loadOpenRun(root, entry.id);
-	process.stdout.write(`${renderActiveRun(run, formatOf())}\n`);
+	process.stdout.write(`${renderActiveRun(await statusOf(root, entry), formatOf())}\n`);
 });
 
 program.command("runs").description("list runs").action(async () => {
@@ -61,9 +58,15 @@ program
 	.alias("replay")
 	.description("print the event timeline")
 	.action(async (id: string) => {
+		const root = await repoRoot();
 		const runId = parseRunId(id);
-		const { events, gapCount } = await readEvents(rptDirOf(await repoRoot()), runId);
-		requireExistingRun(runId, events);
+		const { events, gapCount } = await readEvents(rptDirOf(root), runId);
+		// Any surviving event is evidence, and showing evidence is what this command
+		// is for. A run whose RunStarted was torn off by a crash is exactly the run a
+		// user needs the timeline for, so it renders - with the gap warning above it -
+		// rather than being answered for as if it had never existed. Only a run with
+		// nothing readable at all falls through to be diagnosed.
+		if (events.length === 0) throw new Error(await diagnosisMessage(root, runId));
 		process.stdout.write(renderTimeline(events, gapCount, formatOf()));
 	});
 
@@ -81,20 +84,6 @@ async function repoRoot(): Promise<string> {
 	return root;
 }
 
-// A row in the index whose event log cannot be projected is not "no active run":
-// it is a run that was allocated an id and then never recorded anything, which is
-// exactly what a failed start leaves behind. Answering "no active run" there would
-// be the silence this whole tool exists to remove, so it is reported instead.
-async function loadOpenRun(root: string, runId: number): Promise<AgentRun> {
-	try {
-		return await loadRun(root, runId);
-	} catch {
-		throw new Error(
-			`run ${runId} is in the run index but recorded no events - the session that opened it never got started; see "rpt runs"`,
-		);
-	}
-}
-
 // A stale, mistyped, or non-numeric run id is the single most likely mistake a user
 // makes with this tool. Number("abc") and Number("1.5") are both non-integers, so
 // this catches typos before they ever reach the domain fold below.
@@ -104,36 +93,94 @@ function parseRunId(raw: string): number {
 	return id;
 }
 
-// loadRun's projectRun throws when the event log for a run is empty - true for a run
-// id that was never allocated, and equally true for any command run in a repo that
-// was never `rpt init`-ed. Translated here into one plain-English line instead of
-// letting that domain error reach the terminal as a stack trace.
+// loadRun's projectRun throws when a run's log has no readable RunStarted at its
+// head. That is true of an id never allocated, of a run still starting, and of a run
+// whose start event a crash tore off - three different answers, so the failure is
+// diagnosed rather than flattened into one blanket "no such run".
 async function loadRunOrThrow(root: string, runId: number): Promise<AgentRun> {
 	try {
 		return await loadRun(root, runId);
 	} catch (error) {
-		throw new Error(missingRunMessage(runId, error));
+		if (!isUnprojectable(error)) throw error;
+		throw new Error(await diagnosisMessage(root, runId));
 	}
 }
 
-// An unknown run id used to print an empty timeline and exit zero here, while
-// `rpt run` correctly errored for the same id - one command answering "nothing
-// happened" to a question the other answered "no such run". projectRun holds the
-// rule for what makes a run exist, so it is asked rather than restated; the
-// projection itself is not needed, only its verdict.
-function requireExistingRun(runId: number, events: AgentEvent[]): void {
+function isUnprojectable(error: unknown): boolean {
+	return error instanceof Error && error.message.includes("does not begin with RunStarted");
+}
+
+// A run is in one of several states, and "absent" is only one of them: nothing
+// anywhere claims it existed. A run that left evidence behind - surviving log
+// lines, or a row in the index - is damaged, or starting, or failed to start, and
+// calling any of those absent is the tool denying evidence it is holding. That is
+// the one thing it exists not to do. Only reached once a projection has failed.
+type RunDiagnosis =
+	| { kind: "absent" }
+	| { kind: "damaged"; gapCount: number }
+	| { kind: "failedToStart"; reason: string }
+	| { kind: "starting" };
+
+async function diagnoseRun(root: string, runId: number): Promise<RunDiagnosis> {
+	const rptDir = rptDirOf(root);
+	const { gapCount } = await readEvents(rptDir, runId);
+	if (gapCount > 0) return { kind: "damaged", gapCount };
+	const row = latestEntries((await readIndex(rptDir)).entries).find((entry) => entry.id === runId);
+	if (row === undefined) return { kind: "absent" };
+	// A row that has already been sealed has an empty log it should not have. That
+	// is damage, not a run still on its way up.
+	if (row.state !== "RUNNING") return { kind: "damaged", gapCount: 0 };
+	return startingOrFailed(rptDir, row);
+}
+
+// The only thing separating a run still starting from a run that failed to start is
+// whether the failure was recorded, so the start-failure log is what answers it.
+// The index row is reserved before the git snapshot, and on a large repository that
+// snapshot takes seconds - a window every normal session passes through, and one
+// that must never be reported as a failure.
+async function startingOrFailed(rptDir: string, row: RunIndexEntry): Promise<RunDiagnosis> {
+	const failure = latestFailureSince(await readStartFailures(rptDir), row.startedAt);
+	return failure === null ? { kind: "starting" } : { kind: "failedToStart", reason: failure.reason };
+}
+
+function latestFailureSince(failures: readonly StartFailure[], startedAt: string): StartFailure | null {
+	const since = failures.filter((failure) => failure.ts >= startedAt);
+	return since[since.length - 1] ?? null;
+}
+
+async function diagnosisMessage(root: string, runId: number): Promise<string> {
+	return messageFor(runId, await diagnoseRun(root, runId));
+}
+
+function messageFor(runId: number, diagnosis: RunDiagnosis): string {
+	switch (diagnosis.kind) {
+		case "absent":
+			return `no run ${runId} found here - try "rpt runs" to see valid ids`;
+		case "failedToStart":
+			return `run ${runId} failed to start and recorded nothing: ${diagnosis.reason} - see "rpt runs"`;
+		case "starting":
+			return `run ${runId} is still starting - it has an id but has not recorded its first event yet`;
+		case "damaged":
+			return diagnosis.gapCount > 0
+				? `run ${runId} is damaged: ${diagnosis.gapCount} unreadable line(s) in its event log and no readable RunStarted - it exists but cannot be projected, try "rpt events ${runId}" to see what survived`
+				: `run ${runId} is damaged: the run index lists it but its event log recorded nothing`;
+	}
+}
+
+// A run that is starting is a normal, transient state, not a failure, so status
+// renders it and exits zero. Every other unprojectable state is reported as the
+// problem it is - answering "no active run" for any of them would be the silence
+// this tool exists to remove.
+async function statusOf(root: string, entry: RunIndexEntry | null): Promise<AgentRun | PendingRun | null> {
+	if (entry === null) return null;
 	try {
-		projectRun(runId, events);
+		return await loadRun(root, entry.id);
 	} catch (error) {
-		throw new Error(missingRunMessage(runId, error));
+		if (!isUnprojectable(error)) throw error;
+		const diagnosis = await diagnoseRun(root, entry.id);
+		if (diagnosis.kind === "starting") return { pending: "starting", id: entry.id };
+		throw new Error(messageFor(entry.id, diagnosis));
 	}
-}
-
-function missingRunMessage(runId: number, error: unknown): string {
-	if (error instanceof Error && error.message.includes("does not begin with RunStarted")) {
-		return `no run ${runId} found here - try "rpt runs" to see valid ids`;
-	}
-	return error instanceof Error ? error.message : String(error);
 }
 
 function formatOf(): OutputFormat {

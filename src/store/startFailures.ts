@@ -11,7 +11,14 @@ export type StartFailure = { ts: string; reason: string };
 export async function recordStartFailure(rptDir: string, reason: string): Promise<void> {
 	await mkdir(rptDir, { recursive: true });
 	const failure: StartFailure = { ts: new Date().toISOString(), reason };
-	await appendFile(startFailuresOf(rptDir), `${JSON.stringify(failure)}\n`, "utf8");
+	// Leading newline, the same guard appendGapUnlocked uses and for the same
+	// reason: a crash can leave a torn, newline-less fragment at the end, and an
+	// append landing directly against it would merge into one unreadable line and
+	// lose both records instead of just the torn one. Doing it with a byte rather
+	// than a read-then-append keeps this write a single call - this is a
+	// best-effort recorder of last resort, and every step it takes is a step that
+	// can fail. readStartFailures drops the blank line it can leave behind.
+	await appendFile(startFailuresOf(rptDir), `\n${JSON.stringify(failure)}\n`, "utf8");
 }
 
 // A line that cannot be read back is dropped rather than thrown on: this file

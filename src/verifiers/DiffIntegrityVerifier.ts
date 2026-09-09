@@ -55,6 +55,9 @@ function observedPathsOf(entry: DiffEntry): string[] {
 }
 
 function isManifest(path: string): boolean {
-	const name = path.split("/").pop() ?? path;
+	// String#split on "/" always returns at least one element, so the basename is
+	// never undefined here - slicing after the last "/" (or 0, when there is
+	// none) says that directly instead of carrying a fallback that can't fire.
+	const name = path.slice(path.lastIndexOf("/") + 1);
 	return MANIFESTS.includes(name);
 }

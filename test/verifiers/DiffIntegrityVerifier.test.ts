@@ -116,4 +116,49 @@ describe("diffIntegrityVerifier", () => {
 
 		expect(result.status).toBe("passed");
 	});
+
+	// Regression coverage for a parser bug, not a verifier bug: git quotes and
+	// octal-escapes a path with non-ASCII characters by default, so a name-status
+	// parser that doesn't ask for NUL-delimited output gets back a quoted,
+	// escaped string that can never equal the agent's claim (the real filename).
+	// That reads as an undeclared change for a file that was declared exactly as
+	// the agent wrote it - a false accusation, which is the one thing this
+	// verifier must never produce. These pin that it doesn't, for an accented
+	// character, a space, and a rename destination, each properly declared.
+	it("does not report an undeclared change for a properly declared filename with an accented character", async () => {
+		const result = await diffIntegrityVerifier.run(await contextAfter({ "café.ts": "1\n" }, ["café.ts"]));
+		expect(result.status).toBe("passed");
+		expect(result.facts.undeclared).toEqual([]);
+	});
+
+	it("does not report an undeclared change for a properly declared filename with a space", async () => {
+		const result = await diffIntegrityVerifier.run(
+			await contextAfter({ "has space.ts": "1\n" }, ["has space.ts"]),
+		);
+		expect(result.status).toBe("passed");
+		expect(result.facts.undeclared).toEqual([]);
+	});
+
+	it("does not report an undeclared change for a rename whose destination has a non-ASCII character", async () => {
+		const repo = await makeFixtureRepo();
+		const body = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i};`).join("\n");
+		await writeFile(join(repo, "old.ts"), body);
+		const baseSha = await createSnapshot(repo, 1, "base");
+		await rm(join(repo, "old.ts"));
+		await writeFile(join(repo, "café-new.ts"), body);
+		const endSha = await createSnapshot(repo, 1, "end");
+		const context: RunContext = {
+			repoRoot: repo,
+			worktree: repo,
+			baseSha,
+			endSha,
+			config: DEFAULT_CONFIG,
+			claims: { mutatedPaths: ["old.ts", "café-new.ts"], commands: [] },
+		};
+
+		const result = await diffIntegrityVerifier.run(context);
+
+		expect(result.status).toBe("passed");
+		expect(result.facts.undeclared).toEqual([]);
+	});
 });

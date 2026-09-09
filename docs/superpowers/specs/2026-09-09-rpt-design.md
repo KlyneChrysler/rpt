@@ -65,7 +65,7 @@ app/                            use cases: startRun, recordEvent, verifyRun,
 domain/   risk/                 pure. no filesystem, no git, no network
         ^
         |
-store/  collectors/  verifiers/ the only impure modules
+store/  collectors/  verifiers/  git/   the only impure modules
 ```
 
 Directory layout:
@@ -81,14 +81,18 @@ src/
   collectors/     AgentAdapter interface, ClaudeCodeAdapter, TranscriptEnricher
   verifiers/      TestVerifier, DiffIntegrityVerifier, SecurityVerifier,
                   TestQualityVerifier, Worktree
+  git/            snapshot creation, refs, diff, worktrees. only module
+                  invoking the git binary
+  daemon/         unix socket server and client
+  pricing/        model price table loading, cost computation
   config/         config loading, defaults, validation
 ```
 
 Module rules:
 - `domain/` and `risk/` import nothing from the other directories.
 - `ui/` imports only from `app/`. Replacing Ink with a web UI touches one directory.
-- Only `store/` writes to `.rpt/`. Only `verifiers/Worktree` invokes git plumbing that
-  creates refs or worktrees.
+- Only `store/` writes to `.rpt/`. Only `git/` invokes the git binary. Verifiers receive a
+  prepared worktree path and never create refs themselves.
 
 ## 6. Event model
 
@@ -364,12 +368,16 @@ repo and is reviewable in a pull request.
 Model and token usage come from the Claude Code transcript at
 `~/.claude/projects/<slug>/<sessionId>.jsonl`. Each assistant message carries the model
 plus input, output, cache-creation and cache-read token counts. rpt emits one
-`ModelUsageRecorded` event per assistant message and prices it against a versioned price
-table keyed by model id, with separate rates per cache tier.
+`ModelUsageRecorded` event per assistant message carrying the model id and the four token
+counts.
 
-The price table is data, not code, and carries its own version. A run's cost record stores
-the table version used, so historical runs remain reproducible when prices change. An
-unknown model id yields a cost of null and a visible warning rather than a wrong number.
+Pricing is data, never code. rpt ships no rates. `.rpt/pricing.json` holds a versioned map
+from model id to per-million-token rates for input, output, cache read and cache creation.
+`rpt init` seeds the file with the model ids found in the repo's transcripts and null
+rates. A model with a null or missing rate yields a cost of null and a visible warning
+rather than a wrong number, and `rpt doctor` reports every unpriced model. A run's cost
+record stores the pricing table version used, so historical runs stay reproducible when
+rates change.
 
 ## 15. Storage
 

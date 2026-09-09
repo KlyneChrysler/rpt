@@ -55,6 +55,16 @@ async function upsertRunLocked(path: string, entry: RunIndexEntry): Promise<void
 
 export async function listRuns(rptDir: string): Promise<RunIndexEntry[]> {
 	const { entries } = await readIndex(join(rptDir, "index.jsonl"));
+	return latestEntries(entries);
+}
+
+// The index is an append-only log: a run gets a RUNNING placeholder row the moment
+// its id is allocated, then further rows as its state changes. Any caller that lists
+// runs needs the latest row per id, newest run first - not the raw rows readIndex
+// hands back. Exported so a caller that also needs readIndex's corruptLines (which
+// listRuns discards) can fold the same raw entries the same way, rather than keeping
+// a second, independently maintained copy of this rule (see src/cli/index.ts).
+export function latestEntries(entries: readonly RunIndexEntry[]): RunIndexEntry[] {
 	const latest = new Map<RunId, RunIndexEntry>();
 	for (const entry of entries) latest.set(entry.id, entry);
 	return [...latest.values()].sort((left, right) => right.id - left.id);

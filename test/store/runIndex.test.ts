@@ -2,7 +2,7 @@ import { appendFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { activeRun, allocateRunId, listRuns, readIndex, upsertRun } from "../../src/store/runIndex.js";
+import { activeRun, allocateRunId, latestEntries, listRuns, readIndex, upsertRun } from "../../src/store/runIndex.js";
 import type { RunIndexEntry } from "../../src/store/runIndex.js";
 
 let rptDir = "";
@@ -46,6 +46,24 @@ describe("listRuns", () => {
 		const runs = await listRuns(rptDir);
 		expect(runs).toHaveLength(1);
 		expect(runs[0]?.state).toBe("ENDED");
+	});
+});
+
+describe("latestEntries", () => {
+	it("collapses repeated rows for the same id to the last one, newest id first", () => {
+		const rows = [entry(1), entry(2), entry(1, { state: "ENDED" }), entry(2, { state: "RECORDED" })];
+		expect(latestEntries(rows)).toEqual([entry(2, { state: "RECORDED" }), entry(1, { state: "ENDED" })]);
+	});
+
+	it("is what listRuns uses internally, so the two never drift", async () => {
+		await upsertRun(rptDir, entry(1));
+		await upsertRun(rptDir, entry(1, { state: "ENDED" }));
+		const { entries } = await readIndex(join(rptDir, "index.jsonl"));
+		expect(await listRuns(rptDir)).toEqual(latestEntries(entries));
+	});
+
+	it("returns an empty array for an empty index", () => {
+		expect(latestEntries([])).toEqual([]);
 	});
 });
 

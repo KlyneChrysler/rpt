@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "../../src/domain/events.js";
 import type { AgentRun } from "../../src/domain/run.js";
 import type { RunIndexEntry } from "../../src/store/runIndex.js";
-import { renderRun, renderRunList, renderTimeline } from "../../src/cli/render.js";
+import { renderActiveRun, renderRun, renderRunList, renderTimeline } from "../../src/cli/render.js";
 
 const run: AgentRun = {
 	id: 1842,
@@ -59,16 +59,46 @@ describe("renderRun", () => {
 	});
 });
 
+describe("renderActiveRun", () => {
+	it("renders the run itself when one is active", () => {
+		expect(renderActiveRun(run, "text")).toContain("1842");
+	});
+
+	it("says there is no active run in text form", () => {
+		expect(renderActiveRun(null, "text")).toBe("no active run");
+	});
+
+	it("says there is no active run in agent form", () => {
+		expect(renderActiveRun(null, "agent")).toBe("no active run");
+	});
+
+	it("emits parseable json when there is no active run", () => {
+		const parsed = JSON.parse(renderActiveRun(null, "json"));
+		expect(parsed.active).toBeNull();
+	});
+
+	it("emits parseable json when a run is active", () => {
+		expect(JSON.parse(renderActiveRun(run, "json")).id).toBe(1842);
+	});
+});
+
 describe("renderTimeline", () => {
+	const events: AgentEvent[] = [
+		{ runId: 1, seq: 0, ts: "2026-09-09T10:00:00.000Z", source: "rpt", kind: "RunStarted", payload: {} },
+		{ runId: 1, seq: 1, ts: "2026-09-09T10:00:42.000Z", source: "claude-code", kind: "FileMutated", payload: { path: "a.ts" } },
+	];
+
 	it("prints one line per event with a relative offset", () => {
-		const events: AgentEvent[] = [
-			{ runId: 1, seq: 0, ts: "2026-09-09T10:00:00.000Z", source: "rpt", kind: "RunStarted", payload: {} },
-			{ runId: 1, seq: 1, ts: "2026-09-09T10:00:42.000Z", source: "claude-code", kind: "FileMutated", payload: { path: "a.ts" } },
-		];
 		const lines = renderTimeline(events, "text").trim().split("\n");
 		expect(lines).toHaveLength(2);
 		expect(lines[1]).toContain("00:42");
 		expect(lines[1]).toContain("a.ts");
+	});
+
+	it("emits parseable json with one entry per event", () => {
+		const parsed = JSON.parse(renderTimeline(events, "json"));
+		expect(parsed).toHaveLength(2);
+		expect(parsed[1].kind).toBe("FileMutated");
 	});
 });
 
@@ -97,5 +127,25 @@ describe("renderRunList", () => {
 		expect(parsed.corruptLines).toBe(2);
 		expect(parsed.runs).toHaveLength(2);
 		expect(parsed.runs[0].id).toBe(2);
+	});
+
+	it("caps the agent format and states how many runs were omitted", () => {
+		const many: RunIndexEntry[] = Array.from({ length: 250 }, (_, i) => ({
+			id: 250 - i,
+			task: `run ${250 - i}`,
+			state: "ENDED",
+			startedAt: "2026-09-09T10:00:00.000Z",
+			endedAt: "2026-09-09T10:05:00.000Z",
+		}));
+		const output = renderRunList({ entries: many, corruptLines: 0 }, "agent");
+		const lines = output.split("\n");
+		expect(lines.length).toBeLessThan(15);
+		expect(output).toMatch(/240 more run/);
+	});
+
+	it("does not omit anything in agent format when the list is short", () => {
+		const output = renderRunList({ entries, corruptLines: 0 }, "agent");
+		expect(output).not.toMatch(/omitted/i);
+		expect(output).toContain("first run");
 	});
 });

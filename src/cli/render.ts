@@ -9,11 +9,21 @@ export function renderRun(run: AgentRun, format: OutputFormat): string {
 	return textLines(run).join("\n");
 }
 
+// No active run is a normal, common outcome (right after `rpt init`, in CI, between
+// agent sessions) - not an error - so it goes through the same format switch as a
+// real run rather than a bare stdout string that would break json piping.
+export function renderActiveRun(run: AgentRun | null, format: OutputFormat): string {
+	if (run !== null) return renderRun(run, format);
+	if (format === "json") return JSON.stringify({ active: null }, null, 2);
+	return "no active run";
+}
+
 // corruptLines travels alongside the entries because a shorter-than-expected
 // list and a damaged index look identical otherwise - the reader must be told
 // which one they're looking at, in every format.
 export function renderRunList(result: IndexReadResult, format: OutputFormat): string {
 	if (format === "json") return JSON.stringify({ runs: result.entries, corruptLines: result.corruptLines }, null, 2);
+	if (format === "agent") return agentRunListLines(result).join("\n");
 	return [...corruptWarning(result.corruptLines), ...result.entries.map(runListLine)].join("\n");
 }
 
@@ -29,6 +39,21 @@ function runListLine(entry: IndexReadResult["entries"][number]): string {
 
 function corruptWarning(corruptLines: number): string[] {
 	return corruptLines > 0 ? [`WARNING: ${corruptLines} corrupt line(s) in the run index, list may be incomplete`, ""] : [];
+}
+
+// Same reasoning as agentLines: the agent format is injected into context on every
+// invocation, so a run history that has grown to hundreds of entries must not grow
+// the output past a fixed cap, just like a single run's file count must not.
+const AGENT_RUN_LIST_CAP = 10;
+
+function agentRunListLines(result: IndexReadResult): string[] {
+	const shown = result.entries.slice(0, AGENT_RUN_LIST_CAP);
+	const omitted = result.entries.length - shown.length;
+	return [
+		...(result.corruptLines > 0 ? [`WARNING: ${result.corruptLines} corrupt line(s) in the run index`] : []),
+		...shown.map(runListLine),
+		...(omitted > 0 ? [`... ${omitted} more run(s) omitted, run "rpt runs" for the full list`] : []),
+	];
 }
 
 function textLines(run: AgentRun): string[] {

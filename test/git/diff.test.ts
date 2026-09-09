@@ -33,7 +33,7 @@ describe("diffNameStatus", () => {
 		expect(entries).toEqual(expect.arrayContaining([{ path: "gone.ts", status: "D" }]));
 	});
 
-	it("reports renames under the new path", async () => {
+	it("reports renames under the new path, with the old path carried alongside", async () => {
 		const repo = await makeFixtureRepo();
 		const body = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i};`).join("\n");
 		await writeFile(join(repo, "old.ts"), body);
@@ -42,7 +42,9 @@ describe("diffNameStatus", () => {
 		await writeFile(join(repo, "renamed.ts"), body);
 		const end = await createSnapshot(repo, 1, "end");
 		const entries = await diffNameStatus(repo, base, end);
-		expect(entries).toEqual(expect.arrayContaining([{ path: "renamed.ts", status: "R" }]));
+		expect(entries).toEqual(
+			expect.arrayContaining([{ path: "renamed.ts", status: "R", oldPath: "old.ts" }]),
+		);
 	});
 
 	it("is empty when nothing changed", async () => {

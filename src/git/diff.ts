@@ -1,7 +1,10 @@
 import { git } from "./exec.js";
 
 export type DiffStatus = "A" | "M" | "D" | "R";
-export type DiffEntry = { path: string; status: DiffStatus };
+// oldPath is set only for a rename (status "R"): git reports a rename under its
+// new path alone, so callers that need the origin path back need it carried here
+// rather than reconstructing it from the raw name-status line themselves.
+export type DiffEntry = { path: string; status: DiffStatus; oldPath?: string };
 
 export async function diffNameStatus(
 	repo: string,
@@ -30,7 +33,8 @@ export async function diffPatch(repo: string, from: string, to: string): Promise
 function toEntry(line: string): DiffEntry {
 	const [rawStatus = "M", path = "", renamed] = line.split("\t");
 	const status = rawStatus.charAt(0) as DiffStatus;
-	return { path: status === "R" ? (renamed ?? path) : path, status };
+	if (status === "R") return { path: renamed ?? path, status, oldPath: path };
+	return { path, status };
 }
 
 function accumulate(

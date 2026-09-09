@@ -138,6 +138,39 @@ describe("testVerifier", () => {
 		expect(result.facts.failed).toBe(1);
 	});
 
+	it("skips with a reason naming the signal when the process is killed externally, not by rpt", async () => {
+		// The shell kills itself with SIGKILL before rpt's timeout or maxBuffer ever
+		// enter the picture, so Node reports this with killed: false and no exit code.
+		const result = await testVerifier.run(await contextRunning("kill -KILL $$"));
+		expect(result.status).toBe("skipped");
+		expect(result.reason).toMatch(/killed by signal/i);
+		expect(result.reason).toContain("SIGKILL");
+	});
+
+	it("skips with a reason naming the output limit when the command overflows maxBuffer", async () => {
+		// Distinct from a timeout kill: Node reports this with killed left unset and
+		// the numeric exit code replaced by its own sentinel string, not null.
+		const result = await testVerifier.run(await contextRunning("yes | head -c 40000000"));
+		expect(result.status).toBe("skipped");
+		expect(result.reason).toMatch(/output limit/i);
+		expect(result.reason).toContain("32MB");
+	});
+
+	it("skips rather than fails on a startup crash with a long stack trace and no parsed counts", async () => {
+		// Long enough that the old 500-character threshold would have called this
+		// "substantial output" and reported it failed - exactly the false accusation
+		// the threshold's removal exists to prevent.
+		const longStackTrace =
+			"echo \"Error: Cannot find module 'left-pad'\"; " +
+			"i=0; while [ $i -lt 20 ]; do echo \"    at Module._resolveFilename (internal/modules/cjs/loader.js:some:very:long:line:$i)\"; i=$((i+1)); done; " +
+			"exit 1";
+		const result = await testVerifier.run(await contextRunning(longStackTrace));
+		expect(result.status).toBe("skipped");
+		expect(String(result.facts.output).length).toBeGreaterThan(500);
+		expect(result.facts.passed).toBeNull();
+		expect(result.facts.failed).toBeNull();
+	});
+
 	it("recovers a stale or broken node_modules link instead of letting creation throw", async () => {
 		const context = await contextForNodeProject({ repoHasNodeModules: true });
 		await symlink(join(context.repoRoot, "does-not-exist"), join(context.worktree, "node_modules"), "dir");

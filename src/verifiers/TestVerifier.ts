@@ -1,4 +1,4 @@
-import { exec, type ExecException } from "node:child_process";
+import { exec } from "node:child_process";
 import { access, lstat, rm, stat, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,13 +9,10 @@ const run = promisify(exec);
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const OUTPUT_TAIL = 4000;
 const COMMAND_NOT_FOUND_EXIT_CODE = 127;
-
-// Below this, an output that also matches a startup-failure pattern (below) is
-// treated as the whole story: nothing else ran. Above it - or once counts have
-// been parsed - the output is evidence of a suite that actually started, so a
-// matching phrase inside it (e.g. one failing test's own "module not found"
-// assertion) no longer overrides the exit code.
-const SUBSTANTIAL_OUTPUT_THRESHOLD = 500;
+const MAX_BUFFER_BYTES = 32 * 1024 * 1024;
+// Node reports a maxBuffer kill with this string in place of a numeric exit code -
+// not part of the documented ExecException shape, but the real runtime value.
+const MAX_BUFFER_EXCEEDED_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
 
 // Signatures an interpreter or shell prints about failing to start at all, never
 // something a test framework prints about a test failing.
@@ -59,7 +56,13 @@ export function createTestVerifier(timeoutMs: number = DEFAULT_TIMEOUT_MS): Veri
 
 export const testVerifier: Verifier = createTestVerifier();
 
-type Outcome = { ok: boolean; code: number | null; killed: boolean; output: string };
+type Outcome = {
+	ok: boolean;
+	code: number | string | null;
+	killed: boolean;
+	signal: NodeJS.Signals | null;
+	output: string;
+};
 
 type Environment =
 	| { ready: true; description: string; linkedPath: string | null }
@@ -80,7 +83,7 @@ async function runCommand(
 	const environmentReason = environmentFailureReason(outcome, timeoutMs, counts);
 	if (environmentReason !== null) return skippedWithFacts(environmentReason, facts);
 
-	return failed("tests", `test command exited ${outcome.code ?? "unknown"}`, facts);
+	return failed("tests", `test command exited ${outcome.code}`, facts);
 }
 
 // node_modules is the one dependency directory every checkout of this ecosystem
@@ -131,47 +134,75 @@ async function inspectEntry(path: string): Promise<"absent" | "usable" | "broken
 	}
 }
 
+type ExecFailure = {
+	code?: number | string | null;
+	killed?: boolean;
+	signal?: NodeJS.Signals | null;
+	stdout?: string;
+	stderr?: string;
+	message: string;
+};
+
 async function execute(command: string, cwd: string, timeoutMs: number): Promise<Outcome> {
 	try {
-		const { stdout, stderr } = await run(command, { cwd, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 });
-		return { ok: true, code: 0, killed: false, output: `${stdout}${stderr}` };
+		const { stdout, stderr } = await run(command, { cwd, timeout: timeoutMs, maxBuffer: MAX_BUFFER_BYTES });
+		return { ok: true, code: 0, killed: false, signal: null, output: `${stdout}${stderr}` };
 	} catch (error) {
-		const failure = error as ExecException & { stdout?: string; stderr?: string };
+		const failure = error as ExecFailure;
 		return {
 			ok: false,
 			code: failure.code ?? null,
 			killed: failure.killed ?? false,
+			signal: failure.signal ?? null,
 			output: `${failure.stdout ?? ""}${failure.stderr ?? failure.message}`,
 		};
 	}
 }
 
 // Distinguishes "rpt could not run the tests" from "rpt ran the tests and they
-// failed". A timeout kill or a missing binary means the suite never finished (or
-// never started) running at all, so the exit code observed is not evidence of
-// anything - unconditionally environmental. A startup-shaped failure pattern is
-// evidence only when nothing else happened: once the suite has produced parsed
-// counts or a substantial amount of output, it demonstrably started, and its exit
-// code is a real observation that must not be discarded.
+// failed", under one rule: if rpt never obtained a genuine numeric exit code, it
+// did not observe a result, so the status is skipped - covering a timeout kill of
+// rpt's own, a maxBuffer overflow kill, and an externally signalled kill (an OOM
+// kill, say) uniformly, each with its own accurate reason. With a genuine numeric
+// code, 127 (command not found) is unconditionally environmental; otherwise, parsed
+// pass/fail counts are the only signal that the suite actually started - with them,
+// a non-zero exit is a real observation and is reported failed even if the output
+// also happens to mention a missing module; without them, a startup-shaped failure
+// pattern is skipped rather than blamed on the agent. This deliberately errs toward
+// skipped: a real failure from a very quiet reporter whose output also matches a
+// startup phrase lands as unverified rather than as a false accusation.
 function environmentFailureReason(
 	outcome: Outcome,
 	timeoutMs: number,
 	counts: { passed: number | null; failed: number | null },
 ): string | null {
-	if (outcome.killed) {
-		return `test command was killed after rpt's ${formatDuration(timeoutMs)} timeout deadline; rpt did not observe a pass or a failure for this run`;
+	if (typeof outcome.code !== "number") {
+		return noExitCodeReason(outcome, timeoutMs);
 	}
 	if (outcome.code === COMMAND_NOT_FOUND_EXIT_CODE) {
 		return "test command exited 127 (command not found); treating this as an environment problem, not a test failure";
 	}
-	if (!startedRunning(outcome, counts) && matchesStartupFailure(outcome.output)) {
-		return "test command failed before producing any test output, matching a missing interpreter or module signature - not a test failure";
+	if (counts.passed === null && counts.failed === null && matchesStartupFailure(outcome.output)) {
+		return "test command failed before producing any parsed test counts, matching a missing interpreter or module signature - not a test failure";
 	}
 	return null;
 }
 
-function startedRunning(outcome: Outcome, counts: { passed: number | null; failed: number | null }): boolean {
-	return counts.passed !== null || counts.failed !== null || outcome.output.length > SUBSTANTIAL_OUTPUT_THRESHOLD;
+// rpt's own timeout sets `killed: true` (Node calls .kill() itself); a maxBuffer
+// overflow kill does not set `killed`, but replaces the numeric code with Node's
+// own sentinel string; anything else with no numeric code but a signal was killed
+// by something outside rpt entirely - the OS OOM killer, most plausibly.
+function noExitCodeReason(outcome: Outcome, timeoutMs: number): string {
+	if (outcome.killed) {
+		return `test command was killed after exceeding rpt's timeout deadline of ${formatDuration(timeoutMs)}; rpt did not observe a pass or a failure for this run`;
+	}
+	if (outcome.code === MAX_BUFFER_EXCEEDED_CODE) {
+		return `test command was killed after exceeding rpt's output limit of ${MAX_BUFFER_BYTES / (1024 * 1024)}MB; rpt did not observe a pass or a failure for this run`;
+	}
+	if (outcome.signal !== null) {
+		return `test command was killed by signal ${outcome.signal}, not by rpt; rpt did not observe a pass or a failure for this run`;
+	}
+	return "test command produced no exit code; rpt did not observe a pass or a failure for this run";
 }
 
 function matchesStartupFailure(output: string): boolean {
@@ -179,9 +210,13 @@ function matchesStartupFailure(output: string): boolean {
 }
 
 function formatDuration(ms: number): string {
-	if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000} minute`;
-	if (ms >= 1000 && ms % 1000 === 0) return `${ms / 1000} second`;
+	if (ms >= 60_000 && ms % 60_000 === 0) return pluralize(ms / 60_000, "minute");
+	if (ms >= 1000 && ms % 1000 === 0) return pluralize(ms / 1000, "second");
 	return `${ms}ms`;
+}
+
+function pluralize(count: number, unit: string): string {
+	return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 
 function countsFrom(output: string): { passed: number | null; failed: number | null } {

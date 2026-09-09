@@ -1,5 +1,6 @@
 import { claudeCodeAdapter } from "../collectors/claudeCode.js";
 import { createSnapshot } from "../git/snapshot.js";
+import type { DraftEvent, RunId } from "../domain/events.js";
 import type { AgentRun } from "../domain/run.js";
 import { appendEvent, readEvents } from "../store/eventLog.js";
 import { transitionCurrentRun } from "../store/currentRun.js";
@@ -27,20 +28,23 @@ export async function endRun(repoRoot: string): Promise<AgentRun> {
 		const runId = current;
 		const endSha = await createSnapshot(repoRoot, runId, "end");
 		const endedAt = new Date().toISOString();
+
+		// Enriched *before* AgentStopped is appended, and before anything else in
+		// this callback has written. usageDrafts() never throws (a transcript
+		// problem degrades to no usage events - a run that cannot be priced is
+		// still a valid run), but if it ever did, sealing before that point would
+		// leave the run stopped in the log but not ended in the index: stranded,
+		// with a retry appending a second AgentStopped. Computing it first means a
+		// failure here aborts before any of that has been written.
+		const usage = await usageDrafts(rptDir, repoRoot, runId);
+
 		await appendEvent(rptDir, runId, {
 			ts: endedAt,
 			source: "rpt",
 			kind: "AgentStopped",
 			payload: { endSha },
 		});
-		// Enrich with model usage from the transcript, if the run started with one.
-		// This reads the transcript file (at most once) while still inside
-		// transitionCurrentRun's lock - acceptable because the read is local and
-		// bounded, not a network call, so it does not meaningfully extend how long
-		// the pointer stays locked.
-		const started = (await readEvents(rptDir, runId)).events.find((event) => event.kind === "RunStarted");
-		const transcriptPath = typeof started?.payload.transcriptPath === "string" ? started.payload.transcriptPath : null;
-		for (const draft of await claudeCodeAdapter.enrich(await loadRun(repoRoot, runId), { transcriptPath })) {
+		for (const draft of usage) {
 			await appendEvent(rptDir, runId, draft);
 		}
 		// Reload through the fold rather than trust the draft that started the run: a
@@ -52,4 +56,25 @@ export async function endRun(repoRoot: string): Promise<AgentRun> {
 		await upsertRun(rptDir, { id: runId, task: run.task, state: "ENDED", startedAt: run.startedAt, endedAt });
 		return { next: null, result: run };
 	});
+}
+
+// Reads the run's transcript path from its RunStarted event and enriches with
+// model usage from that transcript, if there is one. Never throws: a
+// transcript that is unreadable for any reason (not just missing - a
+// permissions error, a directory where a file was expected, ...) must not
+// block the run from sealing, so any failure here is traced to stderr and
+// treated the same as "no transcript".
+async function usageDrafts(rptDir: string, repoRoot: string, runId: RunId): Promise<DraftEvent[]> {
+	try {
+		const started = (await readEvents(rptDir, runId)).events.find((event) => event.kind === "RunStarted");
+		const transcriptPath = typeof started?.payload.transcriptPath === "string" ? started.payload.transcriptPath : null;
+		return await claudeCodeAdapter.enrich(await loadRun(repoRoot, runId), { transcriptPath });
+	} catch (error) {
+		process.stderr.write(`rpt: transcript enrichment failed for run ${runId}, sealing without usage: ${errorMessage(error)}\n`);
+		return [];
+	}
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

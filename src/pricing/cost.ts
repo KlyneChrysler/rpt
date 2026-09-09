@@ -1,11 +1,22 @@
+import { z } from "zod";
 import type { ModelUsage } from "../domain/run.js";
 
-export type Rates = {
-	input: number | null;
-	output: number | null;
-	cacheRead: number | null;
-	cacheCreate: number | null;
-};
+// The exact, closed shape of one model's rates: all four fields required (a
+// missing field is not "unpriced for that field", it is a malformed entry),
+// each either a real per-million-token rate or an explicit null meaning
+// "known to be unknown, don't guess" - and no other fields tolerated, so a
+// typo'd key doesn't quietly ride along as an ignored extra while the field
+// it was meant to set is treated as missing.
+export const ratesSchema = z
+	.object({
+		input: z.number().nullable(),
+		output: z.number().nullable(),
+		cacheRead: z.number().nullable(),
+		cacheCreate: z.number().nullable(),
+	})
+	.strict();
+
+export type Rates = z.infer<typeof ratesSchema>;
 
 export type PricingTable = { version: number; rates: Record<string, Rates> };
 
@@ -33,10 +44,16 @@ export function costOf(usage: readonly ModelUsage[], table: PricingTable): Cost 
 	return { usd: round(usd), unpriced: [] };
 }
 
+// Validates shape, not just presence: table.rates[entry.model] is typed as
+// Rates, but nothing upstream guarantees a value read from JSON actually has
+// that shape (see loadPricing). A rate object missing a key, carrying an
+// extra key, or holding a non-numeric value must fail here rather than let
+// `rates.cacheRead ?? 0` in priceModel silently price that class at zero.
 function isPriced(entry: ModelUsage, table: PricingTable): boolean {
 	const rates = table.rates[entry.model];
 	if (rates === undefined) return false;
-	return Object.values(rates).every((rate) => rate !== null);
+	const parsed = ratesSchema.safeParse(rates);
+	return parsed.success && Object.values(parsed.data).every((rate) => rate !== null);
 }
 
 function groupTotalsByModel(usage: readonly ModelUsage[]): Map<string, TokenTotals> {

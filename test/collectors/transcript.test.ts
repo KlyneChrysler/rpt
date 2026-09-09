@@ -31,4 +31,24 @@ describe("readTranscriptUsage", () => {
 	it("returns nothing for a missing transcript instead of throwing", async () => {
 		expect(await readTranscriptUsage("/nonexistent/transcript.jsonl")).toEqual([]);
 	});
+
+	it("drops a record whose usage field is a string instead of a number", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "rpt-transcript-"));
+		const path = join(dir, "t.jsonl");
+		await writeFile(
+			path,
+			'{"type":"assistant","message":{"model":"m","usage":{"input_tokens":"12","output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n',
+		);
+		expect(await readTranscriptUsage(path)).toEqual([]);
+	});
+
+	it("drops a record whose usage field is null instead of a number", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "rpt-transcript-"));
+		const path = join(dir, "t.jsonl");
+		await writeFile(
+			path,
+			'{"type":"assistant","message":{"model":"m","usage":{"input_tokens":null,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n',
+		);
+		expect(await readTranscriptUsage(path)).toEqual([]);
+	});
 });

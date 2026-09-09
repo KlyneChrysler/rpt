@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { endRun, NoRunInProgressError } from "../../src/app/endRun.js";
@@ -47,6 +47,27 @@ describe("run lifecycle", () => {
 		await startRun(repo, { task: "t", transcriptPath: "test/fixtures/transcript.jsonl" });
 		const ended = await endRun(repo);
 		expect(ended.usage.length).toBeGreaterThan(0);
+	});
+
+	// Review finding: a transcript read failure that isn't "file missing" (a
+	// permissions error, a directory where a file was expected) used to abort
+	// endRun mid-sequence, after AgentStopped was already appended but before the
+	// index row was written - stranding the run. A directory at the transcript
+	// path reproduces that class of failure (readFile rejects with EISDIR, not
+	// ENOENT) without needing real filesystem permissions to break.
+	it("seals cleanly with no usage when the transcript path cannot be read as a file", async () => {
+		const repo = await makeFixtureRepo();
+		const rptDir = rptDirOf(repo);
+		const notAFile = join(rptDir, "transcript-is-actually-a-dir");
+		await mkdir(notAFile, { recursive: true });
+		await startRun(repo, { task: "t", transcriptPath: notAFile });
+
+		const ended = await endRun(repo);
+
+		expect(ended.state).toBe("ENDED");
+		expect(ended.usage).toEqual([]);
+		const { events } = await readEvents(rptDir, 1);
+		expect(events.filter((event) => event.kind === "AgentStopped")).toHaveLength(1);
 	});
 
 	it("refuses to end a run when none is running", async () => {

@@ -5,7 +5,7 @@ import type { AgentRun } from "../domain/run.js";
 import { loadRun } from "../app/loadRun.js";
 import { initRepo } from "../app/initRepo.js";
 import { readEvents } from "../store/eventLog.js";
-import { rptDirOf } from "../store/paths.js";
+import { findRepoRoot, rptDirOf } from "../store/paths.js";
 import { activeRun, latestEntries, readIndex } from "../store/runIndex.js";
 import { runHookCommand } from "./hook.js";
 import type { OutputFormat } from "./format.js";
@@ -20,23 +20,30 @@ program.command("init").description("install hooks and scaffolds").action(async 
 	process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 });
 
+// The one command that must never fail hard: a hook that exits non-zero can block
+// the agent's tool call, and rpt breaking the thing it observes is worse than rpt
+// recording nothing. So an unresolvable root falls back to the working directory
+// here rather than throwing, and whatever goes wrong downstream is recorded as a
+// failed start instead (see runHookCommand).
 program.command("hook").description("internal: consume an agent hook payload").action(async () => {
-	process.exitCode = await runHookCommand(process.cwd(), await readStdin());
+	const root = (await findRepoRoot(process.cwd())) ?? process.cwd();
+	process.exitCode = await runHookCommand(root, await readStdin());
 });
 
 program.command("status").description("show the active run").action(async () => {
-	const entry = await activeRun(rptDirOf(process.cwd()));
-	const run = entry === null ? null : await loadRun(process.cwd(), entry.id);
+	const root = await repoRoot();
+	const entry = await activeRun(rptDirOf(root));
+	const run = entry === null ? null : await loadRun(root, entry.id);
 	process.stdout.write(`${renderActiveRun(run, formatOf())}\n`);
 });
 
 program.command("runs").description("list runs").action(async () => {
-	const { entries, corruptLines } = await readIndex(rptDirOf(process.cwd()));
+	const { entries, corruptLines } = await readIndex(rptDirOf(await repoRoot()));
 	process.stdout.write(`${renderRunList({ entries: latestEntries(entries), corruptLines }, formatOf())}\n`);
 });
 
 program.command("run <id>").description("show one run").action(async (id: string) => {
-	const run = await loadRunOrThrow(parseRunId(id));
+	const run = await loadRunOrThrow(await repoRoot(), parseRunId(id));
 	process.stdout.write(`${renderRun(run, formatOf())}\n`);
 });
 
@@ -45,9 +52,23 @@ program
 	.alias("replay")
 	.description("print the event timeline")
 	.action(async (id: string) => {
-		const { events } = await readEvents(rptDirOf(process.cwd()), parseRunId(id));
+		const { events } = await readEvents(rptDirOf(await repoRoot()), parseRunId(id));
 		process.stdout.write(renderTimeline(events, formatOf()));
 	});
+
+// Read commands answer for a repository, not for a directory, and a repository
+// that cannot be located is not the same fact as a repository with no runs. Saying
+// so - with the directory the search started from - is the difference between a
+// user fixing their `cd` and a user believing rpt recorded nothing.
+async function repoRoot(): Promise<string> {
+	const root = await findRepoRoot(process.cwd());
+	if (root === null) {
+		throw new Error(
+			`no git repository or rpt directory found at or above ${process.cwd()} - run "rpt init" at your repository root`,
+		);
+	}
+	return root;
+}
 
 // A stale, mistyped, or non-numeric run id is the single most likely mistake a user
 // makes with this tool. Number("abc") and Number("1.5") are both non-integers, so
@@ -62,9 +83,9 @@ function parseRunId(raw: string): number {
 // id that was never allocated, and equally true for any command run in a repo that
 // was never `rpt init`-ed. Translated here into one plain-English line instead of
 // letting that domain error reach the terminal as a stack trace.
-async function loadRunOrThrow(runId: number): Promise<AgentRun> {
+async function loadRunOrThrow(root: string, runId: number): Promise<AgentRun> {
 	try {
-		return await loadRun(process.cwd(), runId);
+		return await loadRun(root, runId);
 	} catch (error) {
 		throw new Error(missingRunMessage(runId, error));
 	}

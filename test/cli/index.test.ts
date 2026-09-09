@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -126,5 +127,32 @@ describe("rpt runs: one bad index line does not wedge the recorder", () => {
 		const parsed = JSON.parse(result.stdout);
 		expect(parsed.corruptLines).toBe(1);
 		expect(parsed.runs).toHaveLength(1);
+	});
+});
+
+// Running from a subdirectory is the normal case, not the exception: an agent's
+// hooks fire wherever the session happens to be. Treating the working directory
+// as the repository root made every one of those look like a repository with no
+// history at all, and said so with a clean exit code.
+describe("rpt finds the repository from anywhere inside it", () => {
+	it("lists the repository's runs from a subdirectory", async () => {
+		const repo = await repoWithOneEndedRun();
+		const nested = join(repo, "src/deep");
+		await mkdir(nested, { recursive: true });
+
+		const result = await runCli(["runs", "--format", "json"], nested);
+
+		expect(result.exitCode).toBe(0);
+		expect(JSON.parse(result.stdout).runs).toHaveLength(1);
+	});
+
+	it("says explicitly that it found no repository rather than reporting an empty history", async () => {
+		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
+
+		const result = await runCli(["runs"], bare);
+
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toMatch(/no git repository|not inside/i);
 	});
 });

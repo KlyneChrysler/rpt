@@ -1,11 +1,13 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { handleHook, runHookCommand } from "../../src/cli/hook.js";
 import { loadRun } from "../../src/app/loadRun.js";
 import { readEvents } from "../../src/store/eventLog.js";
 import { activeRun, listRuns, readIndex } from "../../src/store/runIndex.js";
 import { rptDirOf } from "../../src/store/paths.js";
+import { readStartFailures } from "../../src/store/startFailures.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
 async function fixture(name: string): Promise<unknown> {
@@ -139,5 +141,47 @@ describe("runHookCommand", () => {
 		const repo = await makeFixtureRepo();
 		expect(await runHookCommand(repo, JSON.stringify({ hello: "world" }))).toBe(0);
 		expect(await listRuns(rptDirOf(repo))).toEqual([]);
+	});
+});
+
+// A run that cannot start is the loudest failure rpt has and used to be its
+// quietest: the hook traced to a stderr nobody reads and exited zero, then every
+// later hook in that session found no current run and returned, so the whole
+// session recorded nothing and the listing stayed empty. The reason has to outlive
+// the process that saw it.
+describe("a run that cannot start", () => {
+	async function startInto(dir: string): Promise<number> {
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			return await runHookCommand(dir, JSON.stringify(await fixture("SessionStart")));
+		} finally {
+			spy.mockRestore();
+		}
+	}
+
+	it("still exits zero so the agent is never blocked", async () => {
+		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
+		expect(await startInto(bare)).toBe(0);
+	});
+
+	it("records why it could not start, outside any git repository", async () => {
+		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
+		await startInto(bare);
+		const failures = await readStartFailures(rptDirOf(bare));
+		expect(failures).toHaveLength(1);
+		expect(failures[0]?.reason).toMatch(/git/i);
+	});
+
+	it("records why it could not start when the run index is corrupt", async () => {
+		const repo = await makeFixtureRepo();
+		await handleHook(repo, await fixture("SessionStart"));
+		await handleHook(repo, await fixture("Stop"));
+		await appendFile(join(rptDirOf(repo), "index.jsonl"), "42\n");
+
+		await startInto(repo);
+
+		const failures = await readStartFailures(rptDirOf(repo));
+		expect(failures).toHaveLength(1);
+		expect(failures[0]?.reason).toMatch(/corrupt/i);
 	});
 });

@@ -33,7 +33,10 @@ or point a shell alias at `dist/cli/index.js`).
 
 ## `rpt init`
 
-Run once per repository, from the repository root:
+Run once per repository. It can be run from anywhere inside the repository - it
+finds the git root and initialises there, and refuses outright if there is no git
+repository above the working directory, because every run rpt records begins with a
+git snapshot and a directory that isn't a repository can never record one:
 
 ```bash
 rpt init
@@ -130,13 +133,26 @@ per the `.gitignore` line `rpt init` adds):
 
 ```
 .rpt/
-  current            # pointer to the currently-open run, if any
-  index.jsonl         # append-only summary row per run (id, task, state, timestamps)
-  pricing.json         # per-model USD rates; ships empty
+  current                 # pointer to the currently-open run, if any
+  index.jsonl             # append-only summary row per run (id, task, state, timestamps)
+  pricing.json            # per-model USD rates; ships empty
+  start-failures.jsonl    # sessions that could not open a run at all, and why
   runs/
     1/
-      events.jsonl      # this run's full, checksummed event log
+      events.jsonl        # this run's full, checksummed event log
 ```
+
+`start-failures.jsonl` is the third of rpt's three records of its own failures, and
+the only one that exists because there was nowhere else to put it. A `GapRecorded`
+event covers a lost event inside a run; a corrupt-line count covers a damaged index
+row; but a session whose run never started has no event log to gap and no index row
+worth reading, and its absence from the history is otherwise indistinguishable from a
+session that simply never happened. `rpt runs` prints a warning naming the count and
+the newest reason whenever this file is non-empty.
+
+A row in the index that never recorded any events is the residue of that same
+failure. `rpt status` reports it as such rather than saying there is no active run;
+the next session that starts successfully supersedes it.
 
 Git snapshots themselves are not stored under `.rpt/` - they're plain git commit
 objects, reachable from `refs/rpt/runs/<id>/base` and `refs/rpt/runs/<id>/end`,

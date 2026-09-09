@@ -7,6 +7,7 @@ import { loadRun } from "../app/loadRun.js";
 import { initRepo } from "../app/initRepo.js";
 import { readEvents } from "../store/eventLog.js";
 import { findRepoRoot, rptDirOf } from "../store/paths.js";
+import { readStartFailures } from "../store/startFailures.js";
 import { latestEntries, openRun, readIndex } from "../store/runIndex.js";
 import { runHookCommand } from "./hook.js";
 import type { OutputFormat } from "./format.js";
@@ -37,13 +38,17 @@ program.command("hook").description("internal: consume an agent hook payload").a
 program.command("status").description("show the run in progress, if any").action(async () => {
 	const root = await repoRoot();
 	const entry = await openRun(rptDirOf(root));
-	const run = entry === null ? null : await loadRun(root, entry.id);
+	const run = entry === null ? null : await loadOpenRun(root, entry.id);
 	process.stdout.write(`${renderActiveRun(run, formatOf())}\n`);
 });
 
 program.command("runs").description("list runs").action(async () => {
-	const { entries, corruptLines } = await readIndex(rptDirOf(await repoRoot()));
-	process.stdout.write(`${renderRunList({ entries: latestEntries(entries), corruptLines }, formatOf())}\n`);
+	const rptDir = rptDirOf(await repoRoot());
+	const { entries, corruptLines } = await readIndex(rptDir);
+	const startFailures = await readStartFailures(rptDir);
+	process.stdout.write(
+		`${renderRunList({ entries: latestEntries(entries), corruptLines, startFailures }, formatOf())}\n`,
+	);
 });
 
 program.command("run <id>").description("show one run").action(async (id: string) => {
@@ -74,6 +79,20 @@ async function repoRoot(): Promise<string> {
 		);
 	}
 	return root;
+}
+
+// A row in the index whose event log cannot be projected is not "no active run":
+// it is a run that was allocated an id and then never recorded anything, which is
+// exactly what a failed start leaves behind. Answering "no active run" there would
+// be the silence this whole tool exists to remove, so it is reported instead.
+async function loadOpenRun(root: string, runId: number): Promise<AgentRun> {
+	try {
+		return await loadRun(root, runId);
+	} catch {
+		throw new Error(
+			`run ${runId} is in the run index but recorded no events - the session that opened it never got started; see "rpt runs"`,
+		);
+	}
 }
 
 // A stale, mistyped, or non-numeric run id is the single most likely mistake a user

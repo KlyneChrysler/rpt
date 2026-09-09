@@ -2,9 +2,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { installHooks } from "../collectors/claudeCodeHooks.js";
 import { DEFAULT_CONFIG } from "../config/load.js";
+import { findGitRoot } from "../store/paths.js";
 import { createPricingFileIfAbsent } from "../store/pricing.js";
 
 export type InitReport = {
+	repoRoot: string;
 	hooksInstalled: boolean;
 	gitignoreUpdated: boolean;
 	configCreated: boolean;
@@ -17,9 +19,21 @@ export type InitReport = {
 // Nothing here writes under .rpt directly: createPricingFileIfAbsent (and the
 // directory creation it does) lives in src/store, the one layer allowed to
 // touch .rpt, the same way runIndex.ts and currentRun.ts already own it.
-export async function initRepo(repoRoot: string): Promise<InitReport> {
+export async function initRepo(startDir: string): Promise<InitReport> {
+	// Checked before anything is written, and checked here rather than in the CLI so
+	// it holds for every caller. Every run rpt records begins with a git snapshot, so
+	// a directory that is not inside a repository cannot record a run at all - and
+	// the first symptom of that used to arrive hours later, as a session that
+	// recorded nothing from hooks that had all exited zero.
+	const repoRoot = await findGitRoot(startDir);
+	if (repoRoot === null) {
+		throw new Error(
+			`rpt init must run inside a git repository - no .git found at or above ${startDir}; run "git init" first`,
+		);
+	}
 	await installHooks(repoRoot);
 	return {
+		repoRoot,
 		hooksInstalled: true,
 		gitignoreUpdated: await ensureIgnored(repoRoot),
 		configCreated: await createIfAbsent(join(repoRoot, "rpt.config.json"), configTemplate()),

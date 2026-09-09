@@ -125,24 +125,44 @@ describe("renderRunList", () => {
 	];
 
 	it("lists runs in text form", () => {
-		const output = renderRunList({ entries, corruptLines: 0 }, "text");
+		const output = renderRunList({ entries, corruptLines: 0, startFailures: [] }, "text");
 		expect(output).toContain("first run");
 		expect(output).toContain("second run");
 	});
 
 	it("says nothing about corruption when the index is clean", () => {
-		expect(renderRunList({ entries, corruptLines: 0 }, "text")).not.toMatch(/corrupt/i);
+		expect(renderRunList({ entries, corruptLines: 0, startFailures: [] }, "text")).not.toMatch(/corrupt/i);
 	});
 
 	it("warns visibly in text output when the index has corrupt lines", () => {
-		expect(renderRunList({ entries, corruptLines: 3 }, "text")).toMatch(/3.*corrupt/i);
+		expect(renderRunList({ entries, corruptLines: 3, startFailures: [] }, "text")).toMatch(/3.*corrupt/i);
 	});
 
 	it("emits parseable json with the runs and the corrupt line count", () => {
-		const parsed = JSON.parse(renderRunList({ entries, corruptLines: 2 }, "json"));
+		const parsed = JSON.parse(renderRunList({ entries, corruptLines: 2, startFailures: [] }, "json"));
 		expect(parsed.corruptLines).toBe(2);
 		expect(parsed.runs).toHaveLength(2);
 		expect(parsed.runs[0].id).toBe(2);
+	});
+
+	it("names the failed starts and the newest reason in text form", () => {
+		const output = renderRunList(
+			{
+				entries,
+				corruptLines: 0,
+				startFailures: [
+					{ ts: "2026-09-09T10:00:00.000Z", reason: "older reason" },
+					{ ts: "2026-09-09T11:00:00.000Z", reason: "not a git repository" },
+				],
+			},
+			"text",
+		);
+		expect(output).toMatch(/2 session\(s\) failed to start/i);
+		expect(output).toContain("not a git repository");
+	});
+
+	it("says nothing about failed starts when there are none", () => {
+		expect(renderRunList({ entries, corruptLines: 0, startFailures: [] }, "text")).not.toMatch(/failed to start/i);
 	});
 
 	it("caps the agent format and states how many runs were omitted", () => {
@@ -153,14 +173,14 @@ describe("renderRunList", () => {
 			startedAt: "2026-09-09T10:00:00.000Z",
 			endedAt: "2026-09-09T10:05:00.000Z",
 		}));
-		const output = renderRunList({ entries: many, corruptLines: 0 }, "agent");
+		const output = renderRunList({ entries: many, corruptLines: 0, startFailures: [] }, "agent");
 		const lines = output.split("\n");
 		expect(lines.length).toBeLessThan(15);
 		expect(output).toMatch(/240 more run/);
 	});
 
 	it("does not omit anything in agent format when the list is short", () => {
-		const output = renderRunList({ entries, corruptLines: 0 }, "agent");
+		const output = renderRunList({ entries, corruptLines: 0, startFailures: [] }, "agent");
 		expect(output).not.toMatch(/omitted/i);
 		expect(output).toContain("first run");
 	});

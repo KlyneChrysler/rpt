@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { handleHook } from "../../src/cli/hook.js";
+import { handleHook, runHookCommand } from "../../src/cli/hook.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -200,5 +200,26 @@ describe("rpt events", () => {
 
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toMatch(/gap/i);
+	});
+});
+
+describe("rpt runs: a session that never recorded anything", () => {
+	it("says a run failed to start rather than showing an empty history", async () => {
+		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
+		await runHookCommand(bare, JSON.stringify(await fixture("SessionStart")));
+
+		const result = await runCli(["runs"], bare);
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toMatch(/failed to start/i);
+	});
+
+	it("carries the failed starts in json too", async () => {
+		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
+		await runHookCommand(bare, JSON.stringify(await fixture("SessionStart")));
+
+		const result = await runCli(["runs", "--format", "json"], bare);
+
+		expect(JSON.parse(result.stdout).startFailures).toHaveLength(1);
 	});
 });

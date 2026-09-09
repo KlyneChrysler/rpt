@@ -29,6 +29,12 @@ export function pricingFileOf(rptDir: string): string {
 	return join(rptDir, "pricing.json");
 }
 
+// A session that never got as far as a run has no event log to record a gap in,
+// so its one durable trace lives here instead.
+export function startFailuresOf(rptDir: string): string {
+	return join(rptDir, "start-failures.jsonl");
+}
+
 // The daemon owns the server; the store owns the file, because the file lives
 // under .rpt and nothing outside this layer may decide where anything there goes.
 export function socketPathOf(rptDir: string): string {

@@ -1,6 +1,7 @@
 import type { AgentEvent } from "../domain/events.js";
 import type { AgentRun } from "../domain/run.js";
 import type { IndexReadResult } from "../store/runIndex.js";
+import type { StartFailure } from "../store/startFailures.js";
 import { formatDuration, formatOffset, type OutputFormat } from "./format.js";
 
 export function renderRun(run: AgentRun, format: OutputFormat): string {
@@ -18,13 +19,23 @@ export function renderActiveRun(run: AgentRun | null, format: OutputFormat): str
 	return "no active run";
 }
 
-// corruptLines travels alongside the entries because a shorter-than-expected
-// list and a damaged index look identical otherwise - the reader must be told
-// which one they're looking at, in every format.
-export function renderRunList(result: IndexReadResult, format: OutputFormat): string {
-	if (format === "json") return JSON.stringify({ runs: result.entries, corruptLines: result.corruptLines }, null, 2);
-	if (format === "agent") return agentRunListLines(result).join("\n");
-	return [...corruptWarning(result.corruptLines), ...result.entries.map(runListLine)].join("\n");
+// Everything that makes the list less than the whole truth travels with it:
+// corruptLines because a shorter-than-expected list and a damaged index look
+// identical otherwise, startFailures because a session that never opened a run
+// leaves nothing in the list at all. The reader has to be told which of the three
+// they are looking at, in every format.
+export type RunListView = IndexReadResult & { startFailures: readonly StartFailure[] };
+
+export function renderRunList(view: RunListView, format: OutputFormat): string {
+	if (format === "json") {
+		return JSON.stringify({ runs: view.entries, corruptLines: view.corruptLines, startFailures: view.startFailures }, null, 2);
+	}
+	if (format === "agent") return agentRunListLines(view).join("\n");
+	return [
+		...corruptWarning(view.corruptLines),
+		...startFailureWarning(view.startFailures),
+		...view.entries.map(runListLine),
+	].join("\n");
 }
 
 // gapCount travels with the events for the same reason corruptLines travels with
@@ -56,16 +67,29 @@ function corruptWarning(corruptLines: number): string[] {
 	return corruptLines > 0 ? [`WARNING: ${corruptLines} corrupt line(s) in the run index, list may be incomplete`, ""] : [];
 }
 
+function startFailureWarning(failures: readonly StartFailure[]): string[] {
+	const latest = failures[failures.length - 1];
+	if (latest === undefined) return [];
+	return [
+		`WARNING: ${failures.length} session(s) failed to start and recorded nothing at all`,
+		`         most recently: ${latest.reason}`,
+		"",
+	];
+}
+
 // Same reasoning as agentLines: the agent format is injected into context on every
 // invocation, so a run history that has grown to hundreds of entries must not grow
 // the output past a fixed cap, just like a single run's file count must not.
 const AGENT_RUN_LIST_CAP = 10;
 
-function agentRunListLines(result: IndexReadResult): string[] {
-	const shown = result.entries.slice(0, AGENT_RUN_LIST_CAP);
-	const omitted = result.entries.length - shown.length;
+function agentRunListLines(view: RunListView): string[] {
+	const shown = view.entries.slice(0, AGENT_RUN_LIST_CAP);
+	const omitted = view.entries.length - shown.length;
 	return [
-		...(result.corruptLines > 0 ? [`WARNING: ${result.corruptLines} corrupt line(s) in the run index`] : []),
+		...(view.corruptLines > 0 ? [`WARNING: ${view.corruptLines} corrupt line(s) in the run index`] : []),
+		...(view.startFailures.length > 0
+			? [`WARNING: ${view.startFailures.length} session(s) failed to start and recorded nothing`]
+			: []),
 		...shown.map(runListLine),
 		...(omitted > 0 ? [`... ${omitted} more run(s) omitted, run "rpt runs" for the full list`] : []),
 	];

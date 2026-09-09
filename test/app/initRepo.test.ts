@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { initRepo } from "../../src/app/initRepo.js";
@@ -98,6 +99,31 @@ describe("initRepo", () => {
 		const pricing = JSON.parse(await read(repo, ".rpt/pricing.json"));
 		expect(pricing.version).toBe(1);
 		expect(Object.values(pricing.rates)).toEqual([]);
+	});
+
+	// A run cannot start outside a git repository: snapshotting is a git commit-tree.
+	// Without this check the first failure surfaced hours later, as a session that
+	// recorded nothing, from a hook that had already exited zero.
+	it("refuses to initialise outside a git repository", async () => {
+		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
+		await expect(initRepo(bare)).rejects.toThrow(/git repository/i);
+	});
+
+	it("writes nothing at all when there is no git repository", async () => {
+		const bare = await mkdtemp(join(tmpdir(), "rpt-bare-"));
+		await expect(initRepo(bare)).rejects.toThrow();
+		await expect(read(bare, "rpt.config.json")).rejects.toThrow();
+	});
+
+	it("initialises the repository root when run from a subdirectory", async () => {
+		const repo = await makeFixtureRepo();
+		const nested = join(repo, "src/deep");
+		await mkdir(nested, { recursive: true });
+
+		const report = await initRepo(nested);
+
+		expect(report.repoRoot).toBe(repo);
+		expect(JSON.parse(await read(repo, "rpt.config.json"))).toHaveProperty("thresholds");
 	});
 
 	it("is idempotent", async () => {

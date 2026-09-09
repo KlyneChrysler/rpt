@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,6 +49,52 @@ describe("daemon round trip", () => {
 
 	it("reports failure rather than throwing when nothing is listening", async () => {
 		expect(await sendEvent(join(rptDir, "absent.sock"), 1, draft)).toBe(false);
+	});
+});
+
+// Writes a raw line straight at the daemon, bypassing encode(), so a frame the
+// daemon cannot decode can be tested at all. Resolves with the daemon's reply.
+function sendRaw(socketPath: string, line: string): Promise<string> {
+	return new Promise((resolve) => {
+		const socket = connect(socketPath, () => socket.write(line));
+		socket.setEncoding("utf8");
+		socket.on("data", (chunk: string) => {
+			socket.destroy();
+			resolve(chunk);
+		});
+		socket.on("error", () => resolve(""));
+	});
+}
+
+// The daemon's reply is a promise that the event reached the log. Anything else
+// has to read as undelivered, or the client stops falling back and a failed write
+// becomes a run that projects clean.
+describe("daemon acknowledgement", () => {
+	it("does not acknowledge an event it failed to persist", async () => {
+		daemon = await startDaemon(rptDir);
+		await mkdir(join(rptDir, "runs"), { recursive: true });
+		// A regular file standing where run 1's directory has to be created: the
+		// daemon's appendEvent fails on mkdir, structurally, on every platform.
+		await writeFile(join(rptDir, "runs", "1"), "");
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			expect(await sendEvent(daemon.socketPath, 1, draft)).toBe(false);
+		} finally {
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it("traces a frame it cannot decode rather than skipping it in silence", async () => {
+		daemon = await startDaemon(rptDir);
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const reply = await sendRaw(daemon.socketPath, "this is not a frame\n");
+			expect(reply.trim()).not.toBe("ok");
+			const traced = stderrSpy.mock.calls.some((call) => String(call[0]).includes("undecodable"));
+			expect(traced).toBe(true);
+		} finally {
+			stderrSpy.mockRestore();
+		}
 	});
 });
 

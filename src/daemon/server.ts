@@ -1,9 +1,11 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { mkdir, rm } from "node:fs/promises";
 import { appendEvent } from "../store/eventLog.js";
-import { decode, socketPathOf } from "./protocol.js";
+import { decode, FAILED_REPLY, OK_REPLY, socketPathOf } from "./protocol.js";
 
 export type Daemon = { socketPath: string; close(): Promise<void> };
+
+const TRACE_MAX_CHARS = 200;
 
 export async function startDaemon(rptDir: string): Promise<Daemon> {
 	await mkdir(rptDir, { recursive: true });
@@ -26,17 +28,32 @@ function handle(rptDir: string, socket: Socket): void {
 	socket.on("error", () => socket.destroy());
 }
 
+// An acknowledgement is a promise that the event is in the log. The client treats
+// anything but "ok" as undelivered and falls back to its own append and then to a
+// gap, so a frame that could not be decoded or could not be appended must never be
+// answered with "ok": that is precisely how a failed write turns into a run that
+// projects clean. One reply per batch, so any failure in the batch fails the batch.
 async function persistAll(rptDir: string, lines: string[], socket: Socket): Promise<void> {
+	let persisted = true;
 	for (const line of lines) {
-		const frame = decode(line);
-		if (frame === null) continue;
-		try {
-			await appendEvent(rptDir, frame.runId, frame.draft);
-		} catch (error) {
-			process.stderr.write(`rpt daemon: append failed: ${(error as Error).message}\n`);
-		}
+		persisted = (await persistOne(rptDir, line)) && persisted;
 	}
-	socket.write("ok\n");
+	socket.write(persisted ? `${OK_REPLY}\n` : `${FAILED_REPLY}\n`);
+}
+
+async function persistOne(rptDir: string, line: string): Promise<boolean> {
+	const frame = decode(line);
+	if (frame === null) {
+		process.stderr.write(`rpt daemon: undecodable frame dropped: ${line.slice(0, TRACE_MAX_CHARS)}\n`);
+		return false;
+	}
+	try {
+		await appendEvent(rptDir, frame.runId, frame.draft);
+		return true;
+	} catch (error) {
+		process.stderr.write(`rpt daemon: append failed: ${(error as Error).message}\n`);
+		return false;
+	}
 }
 
 function listen(server: Server, socketPath: string): Promise<void> {

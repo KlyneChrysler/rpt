@@ -1,7 +1,7 @@
 import { connect } from "node:net";
 import type { DraftEvent, RunId } from "../domain/events.js";
 import { appendEvent, appendGapUnlocked } from "../store/eventLog.js";
-import { encode, socketPathOf } from "./protocol.js";
+import { encode, OK_REPLY, socketPathOf } from "./protocol.js";
 
 const SEND_TIMEOUT_MS = 200;
 
@@ -16,6 +16,7 @@ export async function deliver(rptDir: string, runId: RunId, draft: DraftEvent): 
 export function sendEvent(socketPath: string, runId: RunId, draft: DraftEvent): Promise<boolean> {
 	return new Promise((resolve) => {
 		const socket = connect(socketPath);
+		socket.setEncoding("utf8");
 		// Every exit path below must go through settle exactly once: it is the
 		// only place the socket is destroyed and the promise resolved. Without
 		// the guard, a slow or half-open connection racing a timeout against a
@@ -50,7 +51,16 @@ export function sendEvent(socketPath: string, runId: RunId, draft: DraftEvent): 
 			}
 			socket.write(frame);
 		});
-		socket.on("data", () => settle(true));
+		// Delivered means persisted, not answered. The daemon replies "failed" for a
+		// frame it could not decode or could not append, and treating that as success
+		// would skip the direct-append fallback and the gap behind it - the event
+		// would vanish while the run still projected clean.
+		let reply = "";
+		socket.on("data", (chunk: string) => {
+			reply += chunk;
+			const end = reply.indexOf("\n");
+			if (end !== -1) settle(reply.slice(0, end).trim() === OK_REPLY);
+		});
 	});
 }
 

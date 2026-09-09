@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import lockfile from "proper-lockfile";
 import { checksumOf, verifyChecksum } from "../domain/checksum.js";
 import type { AgentEvent, DraftEvent, RunId, StoredEvent } from "../domain/events.js";
+import { withInProcessLock } from "./inProcessLock.js";
 import { eventLogOf } from "./paths.js";
 
 export const MAX_PAYLOAD_BYTES = 8192;
@@ -10,18 +11,6 @@ const MAX_FIELD_BYTES = 1024;
 const TRUNCATION_SUFFIX = "...";
 
 export type ReadResult = { events: AgentEvent[]; gapCount: number };
-
-// Per-log-path queue serializing same-process callers. Only one in-process caller
-// ever attempts the cross-process file lock at a time, so proper-lockfile below only
-// has to arbitrate against a genuinely separate process, not against itself.
-const inProcessQueues = new Map<string, Promise<unknown>>();
-
-function withInProcessLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-	const previous = inProcessQueues.get(key) ?? Promise.resolve();
-	const settled = previous.then(fn, fn);
-	inProcessQueues.set(key, settled.catch(() => undefined));
-	return settled;
-}
 
 export async function appendEvent(rptDir: string, runId: RunId, draft: DraftEvent): Promise<AgentEvent> {
 	const path = eventLogOf(rptDir, runId);

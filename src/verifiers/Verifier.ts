@@ -38,7 +38,13 @@ async function runOne(verifier: Verifier, context: RunContext): Promise<Verifier
 	try {
 		result = await verifier.run(context);
 	} catch (error) {
-		return skipped(verifier.id, `verifier threw: ${normalizeThrownValue(error)}`);
+		let message: string;
+		try {
+			message = normalizeThrownValue(error);
+		} catch {
+			message = "failed to describe thrown value";
+		}
+		return skipped(verifier.id, `verifier threw: ${message}`);
 	}
 	try {
 		return assertExplained(result);

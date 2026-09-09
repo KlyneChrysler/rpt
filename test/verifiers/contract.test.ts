@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runVerifiers, type RunContext, type Verifier } from "../../src/verifiers/Verifier.js";
+import { runVerifiers, type RunContext, type Verifier, passed, failed, skipped } from "../../src/verifiers/Verifier.js";
 import { DEFAULT_CONFIG } from "../../src/config/load.js";
 
 const context: RunContext = {
@@ -104,8 +104,50 @@ describe("runVerifiers", () => {
 		expect(results[1]?.status).toBe("passed");
 	});
 
-	it("passed() creates a passed result with default empty facts", async () => {
-		const { passed } = await import("../../src/verifiers/Verifier.js");
+	it("handles an Error subclass with a throwing message getter, keeping other verifiers running", async () => {
+		const throwingErrorInstance = new Error("base");
+		Object.defineProperty(throwingErrorInstance, "message", {
+			get() {
+				throw new Error("getter exploded");
+			},
+		});
+
+		const results = await runVerifiers(
+			[
+				verifier("throwingGetter", async () => {
+					throw throwingErrorInstance;
+				}),
+				verifier("ok", async () => ({ id: "ok", status: "passed", reason: null, facts: {} })),
+			],
+			context,
+		);
+		expect(results[0]?.status).toBe("skipped");
+		expect(results[0]?.reason).toBeTruthy();
+		expect(results[1]?.status).toBe("passed");
+	});
+
+	it("handles a thrown object with a throwing toString, keeping other verifiers running", async () => {
+		const throwingToString = {
+			toString() {
+				throw new Error("toString exploded");
+			},
+		};
+
+		const results = await runVerifiers(
+			[
+				verifier("throwingToString", async () => {
+					throw throwingToString;
+				}),
+				verifier("ok", async () => ({ id: "ok", status: "passed", reason: null, facts: {} })),
+			],
+			context,
+		);
+		expect(results[0]?.status).toBe("skipped");
+		expect(results[0]?.reason).toBeTruthy();
+		expect(results[1]?.status).toBe("passed");
+	});
+
+	it("passed() creates a passed result with default empty facts", () => {
 		const result = passed("test-id");
 		expect(result.id).toBe("test-id");
 		expect(result.status).toBe("passed");
@@ -113,15 +155,13 @@ describe("runVerifiers", () => {
 		expect(result.facts).toEqual({});
 	});
 
-	it("passed() accepts and includes custom facts", async () => {
-		const { passed } = await import("../../src/verifiers/Verifier.js");
+	it("passed() accepts and includes custom facts", () => {
 		const facts = { count: 42, name: "test" };
 		const result = passed("test-id", facts);
 		expect(result.facts).toEqual(facts);
 	});
 
-	it("failed() creates a failed result with required reason", async () => {
-		const { failed } = await import("../../src/verifiers/Verifier.js");
+	it("failed() creates a failed result with required reason", () => {
 		const result = failed("test-id", "something went wrong");
 		expect(result.id).toBe("test-id");
 		expect(result.status).toBe("failed");
@@ -129,15 +169,13 @@ describe("runVerifiers", () => {
 		expect(result.facts).toEqual({});
 	});
 
-	it("failed() accepts and includes custom facts", async () => {
-		const { failed } = await import("../../src/verifiers/Verifier.js");
+	it("failed() accepts and includes custom facts", () => {
 		const facts = { code: "E_MISMATCH" };
 		const result = failed("test-id", "mismatch", facts);
 		expect(result.facts).toEqual(facts);
 	});
 
-	it("skipped() creates a skipped result with required reason", async () => {
-		const { skipped } = await import("../../src/verifiers/Verifier.js");
+	it("skipped() creates a skipped result with required reason", () => {
 		const result = skipped("test-id", "check not available");
 		expect(result.id).toBe("test-id");
 		expect(result.status).toBe("skipped");

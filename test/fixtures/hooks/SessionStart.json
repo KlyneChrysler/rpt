@@ -1,0 +1,7 @@
+{
+  "cwd": "/fixture/repo",
+  "hook_event_name": "SessionStart",
+  "session_id": "fixture-session",
+  "source": "startup",
+  "transcript_path": "/fixture/repo/.claude/transcript.jsonl"
+}

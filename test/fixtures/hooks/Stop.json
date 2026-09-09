@@ -1,0 +1,15 @@
+{
+  "background_tasks": [],
+  "cwd": "/fixture/repo",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "Stop",
+  "last_assistant_message": "fixture reply",
+  "permission_mode": "acceptEdits",
+  "prompt_id": "4b4e5119-5d4d-4030-98e4-b19650f41b88",
+  "session_crons": [],
+  "session_id": "fixture-session",
+  "stop_hook_active": false,
+  "transcript_path": "/fixture/repo/.claude/transcript.jsonl"
+}

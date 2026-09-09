@@ -1,0 +1,27 @@
+{
+  "cwd": "/fixture/repo",
+  "duration_ms": 2,
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "acceptEdits",
+  "prompt_id": "4b4e5119-5d4d-4030-98e4-b19650f41b88",
+  "session_id": "fixture-session",
+  "tool_input": {
+    "file_path": "/fixture/repo/seed.txt"
+  },
+  "tool_name": "Read",
+  "tool_response": {
+    "file": {
+      "content": "seed\n",
+      "filePath": "/fixture/repo/seed.txt",
+      "numLines": 2,
+      "startLine": 1,
+      "totalLines": 2
+    },
+    "type": "text"
+  },
+  "tool_use_id": "toolu_012KC9t6H6kHpQFAHVDtiDQs",
+  "transcript_path": "/fixture/repo/.claude/transcript.jsonl"
+}

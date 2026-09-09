@@ -1,0 +1,26 @@
+{
+  "cwd": "/fixture/repo",
+  "duration_ms": 3,
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "acceptEdits",
+  "prompt_id": "4b4e5119-5d4d-4030-98e4-b19650f41b88",
+  "session_id": "fixture-session",
+  "tool_input": {
+    "content": "ok\n",
+    "file_path": "/fixture/repo/note.txt"
+  },
+  "tool_name": "Write",
+  "tool_response": {
+    "content": "ok\n",
+    "filePath": "/fixture/repo/note.txt",
+    "originalFile": null,
+    "structuredPatch": [],
+    "type": "create",
+    "userModified": false
+  },
+  "tool_use_id": "toolu_01G2gw3gjGJ4J1X2gc3wrZh8",
+  "transcript_path": "/fixture/repo/.claude/transcript.jsonl"
+}

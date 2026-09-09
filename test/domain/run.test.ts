@@ -65,6 +65,19 @@ describe("projectRun", () => {
 		const events = log(draft("RunStarted", { task: "t", baseSha: "abc" }), draft("FileMutated", { path: "a.ts" }));
 		expect(projectRun(1, events)).toEqual(projectRun(1, events));
 	});
+
+	it("collects commands as claims without deduplicating, ignoring empty strings", () => {
+		const run = projectRun(
+			1,
+			log(
+				draft("RunStarted", { task: "t", baseSha: "abc" }),
+				draft("CommandStarted", { command: "npm test" }),
+				draft("CommandStarted", { command: "npm test" }),
+				draft("CommandStarted", { command: "" }),
+			),
+		);
+		expect(run.claims.commands).toEqual(["npm test", "npm test"]);
+	});
 });
 
 describe("projectRun task derivation (controller ruling)", () => {
@@ -125,6 +138,18 @@ describe("projectRun task derivation (controller ruling)", () => {
 
 	it("leaves the task empty when neither RunStarted nor any PromptSubmitted supplies one", () => {
 		const run = projectRun(1, log(draft("RunStarted", { baseSha: "abc" }), draft("FileMutated", { path: "a.ts" })));
+		expect(run.task).toBe("");
+	});
+
+	it("leaves the task empty when the first PromptSubmitted has no non-empty line, even if a later one does", () => {
+		const run = projectRun(
+			1,
+			log(
+				draft("RunStarted", { baseSha: "abc" }),
+				draft("PromptSubmitted", { prompt: "   \n  \n" }),
+				draft("PromptSubmitted", { prompt: "real task here" }),
+			),
+		);
 		expect(run.task).toBe("");
 	});
 });

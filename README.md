@@ -78,14 +78,29 @@ session transcript - is folded into that run:
 - **Gaps**: if an event is lost - a torn write from a crash, a delivery that
   couldn't reach the daemon and couldn't be appended directly either - the run is
   marked `hasGaps: true` rather than silently missing the event. A gapped run can
-  never be verified later, so every surface (`rpt run`, `rpt status`) prints a
-  visible warning for one instead of pretending it's clean.
+  never be verified later, so every surface (`rpt run`, `rpt runs`, `rpt status`,
+  `rpt events`) prints a visible warning for one instead of pretending it's clean.
 
 Event delivery prefers a small local collector daemon over a Unix socket, so a hook
 invocation can return fast instead of waiting on a file lock; nothing in Plan 1 spawns
 that daemon automatically yet, so in practice every event today is appended directly
-to the log. If a delivery attempt fails outright - no daemon, and the direct append
-also fails - that failure itself becomes a `GapRecorded` event rather than vanishing.
+to the log. The daemon acknowledges a frame only once it is actually on disk, so a
+frame it could not decode or could not append is reported as undelivered and the hook
+falls back rather than believing a write that never happened.
+
+When both routes fail - no daemon, and the direct append also fails - rpt writes a
+`GapRecorded` event as a last resort, deliberately *without* the file lock the direct
+append just failed to take. That is what makes it a different failure mode rather
+than the same one retried: a lock a crashed process never released can stop the
+append but cannot stop the gap. A torn gap line is itself read back as a gap, so
+writing it unlocked can never make the record claim more than the truth.
+
+One failure survives even that, and rpt does not claim otherwise: if the log's own
+directory cannot be written at all (no permissions, no space, a file standing where
+the directory has to go) then nothing can be recorded there, including the gap. rpt
+writes that to stderr and the event is lost. It is the one case where a lost event
+does not become a `GapRecorded`, and it is the reason `.rpt/` being writable is a
+precondition of the record meaning anything.
 
 ## Commands
 

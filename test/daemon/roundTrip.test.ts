@@ -1,12 +1,13 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftEvent } from "../../src/domain/events.js";
 import { deliver, deliverOrRecordGap, sendEvent } from "../../src/daemon/client.js";
 import { startDaemon, type Daemon } from "../../src/daemon/server.js";
 import { readEvents } from "../../src/store/eventLog.js";
+import { eventLogOf } from "../../src/store/paths.js";
 
 let rptDir = "";
 let daemon: Daemon | null = null;
@@ -63,7 +64,7 @@ describe("deliver", () => {
 		expect(events).toHaveLength(1);
 	});
 
-	it("records a gap when both paths fail", async () => {
+	it("reports dropped when both paths fail", async () => {
 		// /proc/nonexistent/rpt (the brief's original path) doesn't exist as a
 		// structural failure mode on macOS, where this project is built - the
 		// test would pass for the wrong reason or not at all. Use a path that is
@@ -133,6 +134,26 @@ describe("deliverOrRecordGap", () => {
 		const { events } = await readEvents(rptDir, 1);
 		expect(events).toHaveLength(1);
 		expect(events[0]?.kind).toBe("FileMutated");
+	});
+
+	// The case the gap of last resort exists for. A lock directory left behind by
+	// a process that died holding it outlives every retry budget in the store, so
+	// the socket has nowhere to go and the direct append cannot take the lock -
+	// and neither can a gap write that goes through the same locked path. The gap
+	// must still land, or the run projects clean with the event simply missing.
+	it("records a gap when the log lock is held past the retry budget", async () => {
+		const logPath = eventLogOf(rptDir, 1);
+		await mkdir(dirname(logPath), { recursive: true });
+		await writeFile(logPath, "");
+		const heldLock = `${logPath}.lock`;
+		await mkdir(heldLock);
+		try {
+			expect(await deliverOrRecordGap(rptDir, 1, draft)).toBe("dropped");
+			const { events } = await readEvents(rptDir, 1);
+			expect(events.map((event) => event.kind)).toContain("GapRecorded");
+		} finally {
+			await rm(heldLock, { recursive: true, force: true });
+		}
 	});
 
 	it("traces the gap write failure when everything fails", async () => {

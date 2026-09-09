@@ -36,6 +36,37 @@ async function appendEventLocked(path: string, runId: RunId, draft: DraftEvent):
 	}
 }
 
+// The gap of last resort, and the only write in this file that takes neither the
+// in-process mutex nor the cross-process file lock. That is the entire point: it
+// is called only after a locked append against this same path has already failed,
+// so repeating that append would fail identically and the loss would be silent.
+// Dropping the locks is safe here and nowhere else, because of what a gap line
+// means - the worst an unlocked append can produce is a torn line, and readEvents
+// already counts a torn line as a gap. An unlocked write therefore cannot make the
+// record claim more than the truth; not writing at all can.
+export async function appendGapUnlocked(rptDir: string, runId: RunId, draft: DraftEvent): Promise<void> {
+	const path = eventLogOf(rptDir, runId);
+	await mkdir(dirname(path), { recursive: true });
+	const event: AgentEvent = { ...draft, payload: capPayload(draft.payload), runId, seq: await bestEffortSeq(path) };
+	const stored: StoredEvent = { ...event, checksum: checksumOf(event) };
+	// A leading newline instead of ensureTrailingNewline: it closes off a torn
+	// fragment left by whoever holds the lock without a second round trip through
+	// the filesystem, and readEvents discards the blank line it can leave behind.
+	await appendFile(path, `\n${JSON.stringify(stored)}\n`, "utf8");
+}
+
+// seq is positional metadata and this append deliberately runs without the lock
+// that makes a position knowable, so a count read outside the lock is the most
+// this can honestly claim. -1 records that even that could not be determined,
+// rather than asserting a position that was never true.
+async function bestEffortSeq(path: string): Promise<number> {
+	try {
+		return await nextSeq(path);
+	} catch {
+		return -1;
+	}
+}
+
 export async function readEvents(rptDir: string, runId: RunId): Promise<ReadResult> {
 	const text = await readOrEmpty(eventLogOf(rptDir, runId));
 	if (text === "") return { events: [], gapCount: 0 };

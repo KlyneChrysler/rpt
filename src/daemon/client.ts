@@ -1,6 +1,6 @@
 import { connect } from "node:net";
 import type { DraftEvent, RunId } from "../domain/events.js";
-import { appendEvent } from "../store/eventLog.js";
+import { appendEvent, appendGapUnlocked } from "../store/eventLog.js";
 import { encode, socketPathOf } from "./protocol.js";
 
 const SEND_TIMEOUT_MS = 200;
@@ -70,13 +70,22 @@ export async function deliverOrRecordGap(
 ): Promise<Delivery> {
 	const delivery = await deliver(rptDir, runId, draft);
 	if (delivery !== "dropped") return delivery;
-	// This runs only once both the socket and a direct append to this same
-	// rptDir have already failed, so the gap write below is attempted against
-	// the same broken location and can predictably fail too. Trace that failure
-	// rather than swallow it: this is the one place responsible for guaranteeing
-	// nothing is lost silently, matching the daemon's own append-failure pattern.
+	await recordGap(rptDir, runId, draft);
+	return "dropped";
+}
+
+// This is the one place responsible for the promise that no event is ever lost in
+// silence, so it must not repeat the write that just failed. Reaching here means a
+// locked append against this exact path has already failed; going through
+// appendEvent again would fail identically, leaving no gap event, no unparseable
+// line, and a run that projects clean. appendGapUnlocked takes neither lock, which
+// is the whole difference: it survives a lock a crashed process never released,
+// the one structural failure a gap write can still beat. A directory that cannot
+// be written at all beats that too, and that case is traced rather than pretended
+// about - it is the single documented hole in the guarantee.
+async function recordGap(rptDir: string, runId: RunId, draft: DraftEvent): Promise<void> {
 	try {
-		await appendEvent(rptDir, runId, {
+		await appendGapUnlocked(rptDir, runId, {
 			ts: new Date().toISOString(),
 			source: "rpt",
 			kind: "GapRecorded",
@@ -85,5 +94,4 @@ export async function deliverOrRecordGap(
 	} catch (error) {
 		process.stderr.write(`rpt: gap recording failed: ${(error as Error).message}\n`);
 	}
-	return "dropped";
 }

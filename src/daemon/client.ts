@@ -30,7 +30,26 @@ export function sendEvent(socketPath: string, runId: RunId, draft: DraftEvent): 
 		};
 		socket.setTimeout(SEND_TIMEOUT_MS, () => settle(false));
 		socket.on("error", () => settle(false));
-		socket.on("connect", () => socket.write(encode({ runId, draft })));
+		// A cleanly closed peer (daemon killed or shutting down mid-accept, before
+		// it writes a reply) fires neither 'error' nor the idle timeout - Node
+		// stops tracking the timer once the socket is gone. Without this listener
+		// the promise never settles and the caller hangs.
+		socket.on("close", () => settle(false));
+		socket.on("connect", () => {
+			// JSON.stringify (inside encode) can throw on a circular payload or a
+			// BigInt. That throw happens outside the promise executor's synchronous
+			// scope, so left unguarded it is an uncaught exception, not a
+			// rejection - it would kill the hook process instead of just failing
+			// this one delivery.
+			let frame: string;
+			try {
+				frame = encode({ runId, draft });
+			} catch {
+				settle(false);
+				return;
+			}
+			socket.write(frame);
+		});
 		socket.on("data", () => settle(true));
 	});
 }
@@ -51,11 +70,20 @@ export async function deliverOrRecordGap(
 ): Promise<Delivery> {
 	const delivery = await deliver(rptDir, runId, draft);
 	if (delivery !== "dropped") return delivery;
-	await appendDirectly(rptDir, runId, {
-		ts: new Date().toISOString(),
-		source: "rpt",
-		kind: "GapRecorded",
-		payload: { reason: "event delivery failed", lost: 1, kind: draft.kind },
-	});
+	// This runs only once both the socket and a direct append to this same
+	// rptDir have already failed, so the gap write below is attempted against
+	// the same broken location and can predictably fail too. Trace that failure
+	// rather than swallow it: this is the one place responsible for guaranteeing
+	// nothing is lost silently, matching the daemon's own append-failure pattern.
+	try {
+		await appendEvent(rptDir, runId, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "GapRecorded",
+			payload: { reason: "event delivery failed", lost: 1, kind: draft.kind },
+		});
+	} catch (error) {
+		process.stderr.write(`rpt: gap recording failed: ${(error as Error).message}\n`);
+	}
 	return "dropped";
 }

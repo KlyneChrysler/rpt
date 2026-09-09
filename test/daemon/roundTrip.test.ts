@@ -1,9 +1,10 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftEvent } from "../../src/domain/events.js";
-import { deliver, sendEvent } from "../../src/daemon/client.js";
+import { deliver, deliverOrRecordGap, sendEvent } from "../../src/daemon/client.js";
 import { startDaemon, type Daemon } from "../../src/daemon/server.js";
 import { readEvents } from "../../src/store/eventLog.js";
 
@@ -74,5 +75,78 @@ describe("deliver", () => {
 		await writeFile(blocker, "");
 		const unwritable = join(blocker, "rpt");
 		expect(await deliver(unwritable, 1, draft)).toBe("dropped");
+	});
+});
+
+describe("sendEvent socket lifecycle", () => {
+	it(
+		"resolves false rather than hanging when the peer closes without replying",
+		async () => {
+			// A daemon killed or shutting down mid-accept can close the connection
+			// before writing "ok\n". Node's idle timer does not fire once the peer
+			// has cleanly closed, so only a 'close' listener catches this - without
+			// one the promise never settles. The explicit test timeout makes a
+			// regression here fail fast instead of stalling the suite.
+			const socketPath = join(rptDir, "close-without-reply.sock");
+			// resume() drains the frame the client writes on connect: without it the
+			// server-side socket's readable half never observes EOF, so it never
+			// finishes its own half of the close and server.close() below would hang
+			// on an unrelated test-harness artifact, not the behaviour under test.
+			const server = createServer((socket) => {
+				socket.resume();
+				socket.end();
+			});
+			await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
+			try {
+				expect(await sendEvent(socketPath, 1, draft)).toBe(false);
+			} finally {
+				await new Promise<void>((resolve) => server.close(() => resolve()));
+			}
+		},
+		2000,
+	);
+
+	it("resolves false rather than crashing when the payload is circular", async () => {
+		daemon = await startDaemon(rptDir);
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+		expect(await sendEvent(daemon.socketPath, 1, { ...draft, payload: circular })).toBe(false);
+	});
+
+	it("resolves false rather than crashing when the payload contains a BigInt", async () => {
+		daemon = await startDaemon(rptDir);
+		expect(await sendEvent(daemon.socketPath, 1, { ...draft, payload: { big: 10n } })).toBe(false);
+	});
+});
+
+describe("deliverOrRecordGap", () => {
+	it("records no gap when the socket delivers", async () => {
+		daemon = await startDaemon(rptDir);
+		expect(await deliverOrRecordGap(rptDir, 1, draft)).toBe("socket");
+		const { events } = await readEvents(rptDir, 1);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.kind).toBe("FileMutated");
+	});
+
+	it("records no gap when the direct append succeeds", async () => {
+		expect(await deliverOrRecordGap(rptDir, 1, draft)).toBe("direct");
+		const { events } = await readEvents(rptDir, 1);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.kind).toBe("FileMutated");
+	});
+
+	it("traces the gap write failure when everything fails", async () => {
+		const base = await mkdtemp(join(tmpdir(), "rpt-unwritable-"));
+		const blocker = join(base, "blocker");
+		await writeFile(blocker, "");
+		const unwritable = join(blocker, "rpt");
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			expect(await deliverOrRecordGap(unwritable, 1, draft)).toBe("dropped");
+			const traced = stderrSpy.mock.calls.some((call) => String(call[0]).includes("gap recording failed"));
+			expect(traced).toBe(true);
+		} finally {
+			stderrSpy.mockRestore();
+		}
 	});
 });

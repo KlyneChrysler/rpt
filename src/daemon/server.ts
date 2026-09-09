@@ -41,8 +41,22 @@ async function persistAll(rptDir: string, lines: string[], socket: Socket): Prom
 
 function listen(server: Server, socketPath: string): Promise<void> {
 	return new Promise((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(socketPath, () => resolve());
+		// A persistent listener, not `.once`: an error after startup must still be
+		// caught (an EventEmitter with no 'error' listener throws on the next one,
+		// crashing the daemon), and rejecting a settled promise is a silent no-op,
+		// so a post-startup error is traced to stderr instead of vanishing.
+		let started = false;
+		server.on("error", (error) => {
+			if (started) {
+				process.stderr.write(`rpt daemon: server error: ${(error as Error).message}\n`);
+				return;
+			}
+			reject(error);
+		});
+		server.listen(socketPath, () => {
+			started = true;
+			resolve();
+		});
 	});
 }
 

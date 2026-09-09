@@ -42,6 +42,13 @@ describe("run lifecycle", () => {
 		expect((await activeRun(rptDirOf(repo)))?.id).toBe(1);
 	});
 
+	it("ends a run started with a transcript path carrying a non-empty usage array", async () => {
+		const repo = await makeFixtureRepo();
+		await startRun(repo, { task: "t", transcriptPath: "test/fixtures/transcript.jsonl" });
+		const ended = await endRun(repo);
+		expect(ended.usage.length).toBeGreaterThan(0);
+	});
+
 	it("refuses to end a run when none is running", async () => {
 		const repo = await makeFixtureRepo();
 		await expect(endRun(repo)).rejects.toThrow(/no run in progress/i);

@@ -1,6 +1,7 @@
+import { claudeCodeAdapter } from "../collectors/claudeCode.js";
 import { createSnapshot } from "../git/snapshot.js";
 import type { AgentRun } from "../domain/run.js";
-import { appendEvent } from "../store/eventLog.js";
+import { appendEvent, readEvents } from "../store/eventLog.js";
 import { transitionCurrentRun } from "../store/currentRun.js";
 import { rptDirOf } from "../store/paths.js";
 import { upsertRun } from "../store/runIndex.js";
@@ -32,6 +33,16 @@ export async function endRun(repoRoot: string): Promise<AgentRun> {
 			kind: "AgentStopped",
 			payload: { endSha },
 		});
+		// Enrich with model usage from the transcript, if the run started with one.
+		// This reads the transcript file (at most once) while still inside
+		// transitionCurrentRun's lock - acceptable because the read is local and
+		// bounded, not a network call, so it does not meaningfully extend how long
+		// the pointer stays locked.
+		const started = (await readEvents(rptDir, runId)).events.find((event) => event.kind === "RunStarted");
+		const transcriptPath = typeof started?.payload.transcriptPath === "string" ? started.payload.transcriptPath : null;
+		for (const draft of await claudeCodeAdapter.enrich(await loadRun(repoRoot, runId), { transcriptPath })) {
+			await appendEvent(rptDir, runId, draft);
+		}
 		// Reload through the fold rather than trust the draft that started the run: a
 		// SessionStart carries no task, so the index row written at start time is blank
 		// (controller ruling). By now the first PromptSubmitted may have arrived, and

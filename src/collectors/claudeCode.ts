@@ -8,20 +8,24 @@ import type { AgentAdapter } from "./AgentAdapter.js";
 import { installHooks, uninstallHooks } from "./claudeCodeHooks.js";
 import { readTranscriptUsage } from "./transcript.js";
 
-const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+// Known-safe response fields per write tool, taken from the captured fixtures
+// (test/fixtures/hooks/PostToolUse.{Write,Edit,NotebookEdit}.json). An
+// allowlist, not a denylist: field naming is inconsistent between tools
+// (camelCase for Write/Edit, snake_case for NotebookEdit), and a denylist
+// written against one tool's response silently lets every field of another
+// tool through - including originalFile/newString/oldString on Edit and
+// original_file/updated_file/old_source/new_source on NotebookEdit, all of
+// which hold whole file or notebook contents. MultiEdit has no entry because
+// it does not exist in the captured build (test/fixtures/hooks/README.md);
+// a build where it does exist will fall through to the keys-only summary
+// below rather than being guessed at.
+const WRITE_TOOL_RESPONSE_ALLOWLIST: Readonly<Record<string, readonly string[]>> = {
+	Write: ["filePath", "type", "userModified"],
+	Edit: ["filePath", "replaceAll", "userModified"],
+	NotebookEdit: ["notebook_path", "cell_id", "cell_type", "edit_mode", "language", "error"],
+};
 
-// Fields on a write-tool's tool_response that hold file content or a diff of
-// it. rpt already captures the real content via git snapshots; storing it a
-// second time in the event log would duplicate that and bloat every edit.
-const CONTENT_BEARING_RESPONSE_FIELDS = new Set([
-	"content",
-	"originalFile",
-	"newContent",
-	"oldContent",
-	"structuredPatch",
-	"patch",
-	"diff",
-]);
+const WRITE_TOOLS = new Set(Object.keys(WRITE_TOOL_RESPONSE_ALLOWLIST));
 
 // Modest bound on how much of a Bash tool's stdout/stderr is kept per event.
 // Chosen to keep typical command output (a few dozen lines) intact while
@@ -44,11 +48,29 @@ export const claudeCodeAdapter: AgentAdapter = {
 export function normalize(raw: unknown): DraftEvent[] {
 	try {
 		return dispatch(raw);
-	} catch {
+	} catch (error) {
 		// Malformed input must never crash the hook process: a lost event is
-		// recoverable, a crashed `claude` invocation is not.
+		// recoverable, a crashed `claude` invocation is not. But silence here
+		// would be a landmine for the next refactor that introduces a throwing
+		// path, so the failure is traced to stderr before the event is dropped.
+		process.stderr.write(
+			`rpt: claude-code adapter: normalization failed for hook_event_name=${recoverHookEventName(raw)}: ${errorMessage(error)}\n`,
+		);
 		return [];
 	}
+}
+
+function recoverHookEventName(raw: unknown): string {
+	try {
+		if (isPlainObject(raw) && typeof raw.hook_event_name === "string") return raw.hook_event_name;
+	} catch {
+		// Reading the field itself threw (e.g. a getter on a malformed object).
+	}
+	return "unknown";
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function dispatch(raw: unknown): DraftEvent[] {
@@ -113,12 +135,13 @@ function toolCallCompletedPayload(payload: Record<string, unknown>, tool: string
 // never the whole object.
 function summarizeToolResponse(tool: string, rawResponse: unknown): Record<string, unknown> {
 	const response = isPlainObject(rawResponse) ? rawResponse : {};
-	if (tool === "Bash") return bashResponseSummary(response);
-	if (WRITE_TOOLS.has(tool)) return writeResponseSummary(response);
+	if (tool === "Bash") return bashOutputSummary(response);
+	const allowlist = WRITE_TOOL_RESPONSE_ALLOWLIST[tool];
+	if (allowlist) return writeResponseSummary(response, allowlist);
 	return { completed: true, responseKeys: Object.keys(response).sort() };
 }
 
-function bashResponseSummary(response: Record<string, unknown>): Record<string, unknown> {
+function bashOutputSummary(response: Record<string, unknown>): Record<string, unknown> {
 	return {
 		stdout: truncate(response.stdout),
 		stderr: truncate(response.stderr),
@@ -126,10 +149,11 @@ function bashResponseSummary(response: Record<string, unknown>): Record<string, 
 	};
 }
 
-function writeResponseSummary(response: Record<string, unknown>): Record<string, unknown> {
+function writeResponseSummary(response: Record<string, unknown>, allowlist: readonly string[]): Record<string, unknown> {
 	const summary: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(response)) {
-		if (CONTENT_BEARING_RESPONSE_FIELDS.has(key)) continue;
+	for (const key of allowlist) {
+		if (!(key in response)) continue;
+		const value = response[key];
 		if (isJsonScalar(value)) summary[key] = value;
 	}
 	return summary;
@@ -145,12 +169,7 @@ function mutations(payload: Record<string, unknown>): DraftEvent[] {
 function commandCompletedPayload(payload: Record<string, unknown>): Record<string, unknown> {
 	const input = isPlainObject(payload.tool_input) ? payload.tool_input : {};
 	const response = isPlainObject(payload.tool_response) ? payload.tool_response : {};
-	const body: Record<string, unknown> = {
-		command: asString(input.command),
-		stdout: truncate(response.stdout),
-		stderr: truncate(response.stderr),
-		interrupted: response.interrupted === true,
-	};
+	const body: Record<string, unknown> = { command: asString(input.command), ...bashOutputSummary(response) };
 	const durationMs = asFiniteNumber(payload.duration_ms);
 	if (durationMs !== null) body.durationMs = durationMs;
 	return body;

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { checksumOf } from "../../src/domain/checksum.js";
 import type { AgentEvent } from "../../src/domain/events.js";
 import { claudeCodeAdapter, normalize } from "../../src/collectors/claudeCode.js";
@@ -51,9 +51,65 @@ describe("claudeCodeAdapter.normalize", () => {
 		expect(completed?.payload.durationMs).toBe(3);
 	});
 
+	it("uses an allowlist for the Edit response, dropping originalFile/newString/oldString/structuredPatch", async () => {
+		const events = normalize(await fixture("PostToolUse.Edit"));
+		const completed = events.find((event) => event.kind === "ToolCallCompleted");
+		expect(completed?.payload.response).toEqual({
+			filePath: "/fixture/repo/edit-me.txt",
+			replaceAll: false,
+			userModified: false,
+		});
+		const mutation = events.find((event) => event.kind === "FileMutated");
+		expect(mutation?.payload.path).toBe("/fixture/repo/edit-me.txt");
+	});
+
+	it("uses an allowlist for the snake_case NotebookEdit response, dropping the whole-notebook fields", async () => {
+		const events = normalize(await fixture("PostToolUse.NotebookEdit"));
+		const completed = events.find((event) => event.kind === "ToolCallCompleted");
+		expect(completed?.payload.response).toEqual({
+			notebook_path: "/fixture/repo/notes.ipynb",
+			cell_id: "c1",
+			cell_type: "code",
+			edit_mode: "replace",
+			language: "python",
+			error: "",
+		});
+		const responseText = JSON.stringify(completed?.payload.response);
+		expect(responseText).not.toContain("print");
+		// finding 2: notebook_path is now verified by a real fixture, so FileMutated may read it.
+		const mutation = events.find((event) => event.kind === "FileMutated");
+		expect(mutation?.payload.path).toBe("/fixture/repo/notes.ipynb");
+	});
+
+	it("does not treat MultiEdit as a write tool, since no fixture proves it exists in this build", () => {
+		const payload = {
+			hook_event_name: "PostToolUse",
+			tool_name: "MultiEdit",
+			tool_use_id: "toolu_multi",
+			tool_input: { file_path: "/fixture/repo/multi.txt" },
+			tool_response: { filePath: "/fixture/repo/multi.txt", type: "update" },
+		};
+		const events = normalize(payload);
+		expect(events.map((event) => event.kind)).toEqual(["ToolCallCompleted"]);
+		const completed = events[0];
+		expect(completed?.payload.response).toEqual({ completed: true, responseKeys: ["filePath", "type"] });
+	});
+
 	it("emits CommandCompleted for a Bash tool result", async () => {
 		const events = normalize(await fixture("PostToolUse.Bash"));
 		expect(events.map((event) => event.kind)).toContain("CommandCompleted");
+	});
+
+	it("emits a CommandCompleted payload with the exact summarized shape for the Bash fixture", async () => {
+		const events = normalize(await fixture("PostToolUse.Bash"));
+		const commandCompleted = events.find((event) => event.kind === "CommandCompleted");
+		expect(commandCompleted?.payload).toEqual({
+			command: "echo done",
+			stdout: "done",
+			stderr: "",
+			interrupted: false,
+			durationMs: 84,
+		});
 	});
 
 	it("summarizes a Bash ToolCallCompleted response to stdout, stderr and interrupted only", async () => {
@@ -102,6 +158,49 @@ describe("claudeCodeAdapter.normalize", () => {
 		expect(normalize(undefined)).toEqual([]);
 	});
 
+	it("returns no events for a raw array payload instead of throwing", () => {
+		expect(normalize([1, 2, 3])).toEqual([]);
+		expect(normalize([])).toEqual([]);
+	});
+
+	it("treats a non-object tool_input as absent instead of throwing", () => {
+		const events = normalize({
+			hook_event_name: "PreToolUse",
+			tool_name: "Write",
+			tool_use_id: "toolu_x",
+			tool_input: "oops, a string instead of an object",
+		});
+		expect(events).toEqual([
+			{
+				ts: expect.any(String),
+				source: "claude-code",
+				kind: "ToolCallStarted",
+				payload: { tool: "Write", input: {}, toolUseId: "toolu_x" },
+			},
+		]);
+	});
+
+	it("logs to stderr and still returns no events when normalization throws unexpectedly", () => {
+		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const throwing = new Proxy(
+				{},
+				{
+					get() {
+						throw new Error("boom");
+					},
+				},
+			);
+			expect(normalize(throwing)).toEqual([]);
+			expect(stderrSpy).toHaveBeenCalledTimes(1);
+			const [message] = stderrSpy.mock.calls[0] as [string];
+			expect(message).toContain("normalization failed");
+			expect(message).toContain("hook_event_name=unknown");
+		} finally {
+			stderrSpy.mockRestore();
+		}
+	});
+
 	it("returns no events instead of throwing when a recognised hook is missing every field it would normally read", () => {
 		expect(normalize({ hook_event_name: "PreToolUse" })).toEqual([{
 			ts: expect.any(String),
@@ -124,6 +223,10 @@ describe("claudeCodeAdapter.normalize", () => {
 			"PostToolUse.Read",
 			"PreToolUse.Write",
 			"PostToolUse.Write",
+			"PreToolUse.Edit",
+			"PostToolUse.Edit",
+			"PreToolUse.NotebookEdit",
+			"PostToolUse.NotebookEdit",
 			"PreToolUse.Bash",
 			"PostToolUse.Bash",
 			"Stop",

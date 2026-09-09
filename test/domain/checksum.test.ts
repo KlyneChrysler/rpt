@@ -42,3 +42,71 @@ describe("checksumOf", () => {
 		expect(verifyChecksum(tampered)).toBe(false);
 	});
 });
+
+describe("validation: non-JSON-plain values throw", () => {
+	it("throws on Date in payload and names the path", () => {
+		const withDate = { ...event, payload: { startedAt: new Date() } };
+		expect(() => canonicalize(withDate)).toThrow(/payload\.startedAt: found Date/);
+	});
+
+	it("throws on undefined in payload", () => {
+		const withUndefined = { ...event, payload: { value: undefined } };
+		expect(() => canonicalize(withUndefined)).toThrow(/payload\.value: found undefined/);
+	});
+
+	it("throws on NaN in payload", () => {
+		const withNaN = { ...event, payload: { value: NaN } };
+		expect(() => canonicalize(withNaN)).toThrow(/payload\.value: found NaN/);
+	});
+
+	it("throws on function in payload", () => {
+		const withFunction = { ...event, payload: { fn: () => {} } };
+		expect(() => canonicalize(withFunction)).toThrow(/payload\.fn: found function/);
+	});
+
+	it("throws on nested bad value and names full path", () => {
+		const nested = { ...event, payload: { outer: { inner: new Date() } } };
+		expect(() => canonicalize(nested)).toThrow(/payload\.outer\.inner: found Date/);
+	});
+
+	it("accepts JSON-plain values in payload", () => {
+		const plain = {
+			...event,
+			payload: {
+				string: "text",
+				number: 42,
+				boolean: true,
+				null: null,
+				array: [1, "two"],
+				object: { a: 1, b: 2 },
+			},
+		};
+		expect(() => canonicalize(plain)).not.toThrow();
+	});
+});
+
+describe("arrays", () => {
+	it("normalizes keys in array of objects while preserving element order", () => {
+		const withKeys1 = {
+			...event,
+			payload: { items: [{ b: 2, a: 1 }] },
+		};
+		const withKeys2 = {
+			...event,
+			payload: { items: [{ a: 1, b: 2 }] },
+		};
+		expect(canonicalize(withKeys1)).toBe(canonicalize(withKeys2));
+	});
+
+	it("changes canonical form when array element order changes", () => {
+		const order1 = {
+			...event,
+			payload: { items: [{ x: 1 }, { x: 2 }] },
+		};
+		const order2 = {
+			...event,
+			payload: { items: [{ x: 2 }, { x: 1 }] },
+		};
+		expect(canonicalize(order1)).not.toBe(canonicalize(order2));
+	});
+});

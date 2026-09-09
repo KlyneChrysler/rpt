@@ -8,10 +8,21 @@ export type Worktree = { path: string; dispose(): Promise<void> };
 export async function openWorktree(repoRoot: string, sha: string): Promise<Worktree> {
 	const parent = await mkdtemp(join(tmpdir(), "rpt-wt-"));
 	const path = join(parent, "tree");
-	await git(repoRoot, ["worktree", "add", "--detach", "--quiet", path, sha]);
+	try {
+		await git(repoRoot, ["worktree", "add", "--detach", "--quiet", path, sha]);
+	} catch (error) {
+		// `add` rejects before a handle exists, so nobody else can ever dispose
+		// this parent directory - clean it up ourselves before rethrowing.
+		await rm(parent, { recursive: true, force: true });
+		throw error;
+	}
 	return { path, dispose: () => dispose(repoRoot, parent, path) };
 }
 
+// Repo-global: git has no per-worktree prune, only a whole-repo sweep. Fine here
+// since rpt is the only thing expected to create worktrees under this repo, but a
+// future caller sharing the repo with other worktree users would see this clear
+// their entries too.
 export async function pruneWorktrees(repoRoot: string): Promise<string[]> {
 	const before = await listRptWorktrees(repoRoot);
 	await git(repoRoot, ["worktree", "prune"]);
@@ -20,7 +31,19 @@ export async function pruneWorktrees(repoRoot: string): Promise<string[]> {
 }
 
 async function dispose(repoRoot: string, parent: string, path: string): Promise<void> {
-	await git(repoRoot, ["worktree", "remove", "--force", path]);
+	try {
+		await git(repoRoot, ["worktree", "remove", "--force", path]);
+	} catch {
+		// The most common cause of a failed removal is a lock, which - unlike a
+		// missing directory - `git worktree prune` never clears on its own. Unlock
+		// (best-effort; a no-op error here just means it wasn't locked) and delete
+		// the directory ourselves so prune has what it needs to drop the orphaned
+		// registration, keeping this path free for the next run to reuse.
+		await git(repoRoot, ["worktree", "unlock", path]).catch(() => {});
+		await rm(parent, { recursive: true, force: true });
+		await git(repoRoot, ["worktree", "prune"]);
+		return;
+	}
 	await rm(parent, { recursive: true, force: true });
 }
 

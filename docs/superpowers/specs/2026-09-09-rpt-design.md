@@ -507,7 +507,8 @@ TDD throughout. Coverage floor 80 percent.
 
 ## 22. Packaging
 
-Published as `@klyne/rpt`. The unscoped npm name `rpt` is taken. The binary is `rpt`.
+Published as `rpt-cli`. The unscoped npm name `rpt` is taken, and no `@klyne` scope
+exists on the registry. The binary is still `rpt`.
 Node with pnpm, TypeScript throughout.
 
 ## 23. Implementation discipline

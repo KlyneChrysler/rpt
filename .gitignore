@@ -4,3 +4,7 @@ node_modules/
 dist/
 .rpt/
 coverage/
+
+# release artefacts, attached to the GitHub release rather than committed
+*.tgz
+*.tgz.sha256

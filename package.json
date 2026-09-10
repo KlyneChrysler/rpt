@@ -1,5 +1,5 @@
 {
-	"name": "@klyne/rpt",
+	"name": "rpt-cli",
 	"version": "0.1.0",
 	"description": "AI agent flight recorder and verification engine: observes an agent run, re-derives the facts, scores risk, and gates the commit.",
 	"type": "module",
@@ -37,9 +37,6 @@
 		"claude-code",
 		"observability"
 	],
-	"publishConfig": {
-		"access": "public"
-	},
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"test": "vitest run",

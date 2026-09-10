@@ -50,6 +50,15 @@ whether the gate was bypassed, or whether nobody was needed.
 Requires Node 22 and a git repository. Tested on Linux, macOS and Windows.
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/KlyneChrysler/rpt/main/install.sh | sh
+```
+
+That downloads the published release tarball, checks it against the SHA-256 in
+the release, and installs it. [Read the script first](install.sh); it is under
+eighty lines and piping anything into a shell deserves that much. To run from
+source instead:
+
+```bash
 git clone https://github.com/KlyneChrysler/rpt.git
 cd rpt && pnpm install && pnpm build && npm link
 ```

@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { loadConfig } from "../config/load.js";
 import { pruneWorktrees } from "../git/worktree.js";
 import { loadPricing } from "../pricing/table.js";
+import { daemonLockHeld } from "../store/daemonLock.js";
 import { GIT_HOOK_MARKER } from "./installGitHooks.js";
 import { rptDirOf, socketPathOf } from "../store/paths.js";
 import { listRuns } from "../store/runIndex.js";
@@ -98,14 +100,42 @@ async function worktrees(repoRoot: string): Promise<Omit<Check, "id">> {
 		: { ok: true, detail: `pruned ${removed.length} orphaned worktree(s)` };
 }
 
-// The daemon is an optimisation, not a requirement: without it the hook
-// appends to the log directly under a file lock. Its absence is reported as
-// information rather than as a fault, so `rpt doctor` in CI does not fail for
-// a component nothing needed.
+// The daemon is an optimisation, not a requirement: without it the hook appends
+// to the log directly under a file lock, and the next hook starts one. Its
+// absence is reported as information rather than as a fault, so `rpt doctor` in
+// CI does not fail for a component nothing needed.
+//
+// Asks the lock, not the socket file. A socket file outlives a daemon that was
+// killed rather than closed, so "the file is there" answers a different
+// question from "something is listening" - and answering the wrong one told
+// users a dead daemon was healthy.
 async function daemon(repoRoot: string): Promise<Omit<Check, "id">> {
-	const path = socketPathOf(rptDirOf(repoRoot));
-	const present = (await readOrNull(path)) !== null;
-	return { ok: true, detail: present ? `socket present at ${path}` : "not running - hooks will append directly, which is fine" };
+	const rptDir = rptDirOf(repoRoot);
+	if (!(await daemonLockHeld(rptDir))) {
+		return { ok: true, detail: "not running - hooks append directly and will start one, which is fine" };
+	}
+	const socketPath = socketPathOf(rptDir);
+	return (await socketAccepts(socketPath))
+		? { ok: true, detail: `running, accepting connections at ${socketPath}` }
+		: { ok: false, detail: `a daemon holds the lock but ${socketPath} is not accepting connections - remove ${socketPath} and let the next hook restart it` };
+}
+
+const SOCKET_PROBE_MS = 250;
+
+function socketAccepts(socketPath: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = connect(socketPath);
+		let settled = false;
+		const settle = (accepted: boolean): void => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			resolve(accepted);
+		};
+		socket.setTimeout(SOCKET_PROBE_MS, () => settle(false));
+		socket.on("error", () => settle(false));
+		socket.on("connect", () => settle(true));
+	});
 }
 
 async function readOrNull(path: string): Promise<string | null> {

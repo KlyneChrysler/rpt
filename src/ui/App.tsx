@@ -19,15 +19,17 @@ import { Diff } from "./screens/Diff.js";
 import { Events } from "./screens/Events.js";
 import { Risk } from "./screens/Risk.js";
 import { RunDetail } from "./screens/RunDetail.js";
+import { Tests } from "./screens/Tests.js";
 
-type Screen = "dashboard" | "detail" | "events" | "diff" | "risk" | "approve";
+type Screen = "dashboard" | "detail" | "events" | "diff" | "risk" | "tests" | "approve";
 
 const HINTS: Record<Screen, string> = {
 	dashboard: "[up/down] select  [enter] open  [q] quit",
-	detail: "[v] events  [d] diff  [r] risk  [a] approve  [esc] back  [q] quit",
+	detail: "[v] events  [d] diff  [t] tests  [r] risk  [a] approve  [esc] back  [q] quit",
 	events: "[esc] back  [q] quit",
 	diff: "[esc] back  [q] quit",
 	risk: "[esc] back  [q] quit",
+	tests: "[esc] back  [q] quit",
 	approve: "[y] approve  [n] reject  [esc] back  [q] quit",
 };
 
@@ -127,6 +129,7 @@ export function App({ repoRoot }: { repoRoot: string }): React.ReactElement {
 		if (screen === "detail") {
 			if (input === "v") setScreen("events");
 			if (input === "d") setScreen("diff");
+			if (input === "t") setScreen("tests");
 			if (input === "r") setScreen("risk");
 			if (input === "a") {
 				setApproval({ kind: "prompt" });
@@ -183,6 +186,7 @@ function Body({ screen, dashboard, detail, patch, approval, selectedIndex }: Bod
 	if (screen === "detail") return <RunDetail model={detail} />;
 	if (screen === "events") return <Events model={detail} />;
 	if (screen === "risk") return <Risk model={detail} />;
+	if (screen === "tests") return <Tests model={detail} />;
 	if (screen === "approve") return <Approve model={detail} status={approval} />;
 	return patch === null ? <Loading /> : <Diff patch={patch} />;
 }

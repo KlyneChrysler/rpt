@@ -6,6 +6,10 @@ export default defineConfig({
 	esbuild: { jsx: "automatic" },
 	test: {
 		include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+		// Every suite that drives a hook would otherwise spawn a real, detached
+		// collector daemon that outlives the run. One test deliberately turns
+		// this back off to exercise the auto-start path for real.
+		setupFiles: ["test/support/setup.ts"],
 		coverage: {
 			provider: "v8",
 			// v8's default reporter set ("text", "html", "clover", "json") never

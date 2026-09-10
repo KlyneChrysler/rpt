@@ -87,6 +87,16 @@ describe("App", () => {
 		expect(lastFrame()).toMatch(/override/i);
 	});
 
+	it("reaches the tests screen on t", async () => {
+		const { lastFrame, stdin } = render(<App repoRoot={await repoWithRun()} />);
+		await settle();
+		stdin.write(ENTER);
+		await settle();
+		stdin.write("t");
+		await settle();
+		expect(lastFrame()).toContain("TESTS");
+	});
+
 	it("shows the key hints on every screen", async () => {
 		const { lastFrame } = render(<App repoRoot={await repoWithRun()} />);
 		await settle();

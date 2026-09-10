@@ -10,6 +10,8 @@ import { loadRun } from "../app/loadRun.js";
 import { initRepo } from "../app/initRepo.js";
 import { recordCommit } from "../app/recordCommit.js";
 import { readVerdict, verifyRun } from "../app/verifyRun.js";
+import { startDaemon } from "../daemon/server.js";
+import { acquireDaemonLock } from "../store/daemonLock.js";
 import { diffPatch } from "../git/diff.js";
 import { readEvents } from "../store/eventLog.js";
 import { findRepoRoot, rptDirOf } from "../store/paths.js";
@@ -187,6 +189,40 @@ program.command("doctor").description("diagnose hooks, config, pricing, worktree
 function renderChecks(checks: readonly Check[], format: OutputFormat): string {
 	if (format === "json") return JSON.stringify({ checks }, null, 2);
 	return checks.map((entry) => `${entry.ok ? "ok" : "!!"}  ${entry.id.padEnd(14)}${entry.detail}`).join("\n");
+}
+
+// The collector daemon. Started automatically by the hook path the first time
+// an event cannot be delivered over the socket, so a user never runs this
+// themselves - it is exposed because a process that only ever exists as a
+// silent side effect is a process nobody can diagnose or start on purpose.
+//
+// Exits zero and does nothing when another daemon already holds the lock:
+// several hooks firing at once must not race several daemons into existence,
+// and "one is already running" is a success, not a failure.
+program
+	.command("daemon")
+	.description("run the collector daemon for this repository in the foreground")
+	.option("--idle <ms>", "shut down after this many milliseconds with nothing connected")
+	.action(async (options: { idle?: string }) => {
+		const rptDir = rptDirOf(await repoRoot());
+		const release = await acquireDaemonLock(rptDir);
+		if (release === null) {
+			process.stdout.write("rpt: a daemon is already running for this repository\n");
+			return;
+		}
+		try {
+			const daemon = await startDaemon(rptDir, idleOptionsFrom(options.idle));
+			await daemon.stopped;
+		} finally {
+			await release();
+		}
+	});
+
+function idleOptionsFrom(raw: string | undefined): { idleMs?: number } {
+	if (raw === undefined) return {};
+	const idleMs = Number(raw);
+	if (!Number.isFinite(idleMs) || idleMs <= 0) throw new Error(`invalid --idle "${raw}" - expected a positive number of milliseconds`);
+	return { idleMs };
 }
 
 // Read commands answer for a repository, not for a directory, and a repository

@@ -3,21 +3,74 @@ import { prepareSocketPath, removeSocketPath } from "../store/daemonSocket.js";
 import { appendEvent } from "../store/eventLog.js";
 import { decode, FAILED_REPLY, OK_REPLY } from "./protocol.js";
 
-export type Daemon = { socketPath: string; close(): Promise<void> };
+// `stopped` settles when the daemon has shut down for any reason, including on
+// its own after going idle. A supervisor - `rpt daemon` - awaits it rather than
+// polling, and a test can await it rather than sleeping.
+export type Daemon = { socketPath: string; close(): Promise<void>; stopped: Promise<void> };
+
+export type DaemonOptions = {
+	// How long the daemon stays up with nothing connected before shutting
+	// itself down. A daemon exists to make hooks fast during a session; one per
+	// repository living forever after the session ends is a process leak the
+	// user never asked for and has no obvious way to find.
+	idleMs?: number;
+};
 
 const TRACE_MAX_CHARS = 200;
+const DEFAULT_IDLE_MS = 5 * 60 * 1000;
+const IDLE_CHECK_DIVISOR = 4;
+const MIN_IDLE_CHECK_MS = 25;
 
-export async function startDaemon(rptDir: string): Promise<Daemon> {
+export async function startDaemon(rptDir: string, options: DaemonOptions = {}): Promise<Daemon> {
 	const socketPath = await prepareSocketPath(rptDir);
-	const server = createServer((socket) => handle(rptDir, socket));
+	const activity = { at: Date.now(), open: 0 };
+	const server = createServer((socket) => handle(rptDir, socket, activity));
 	await listen(server, socketPath);
-	return { socketPath, close: () => close(server, rptDir) };
+
+	let settle = (): void => {};
+	const stopped = new Promise<void>((resolve) => {
+		settle = resolve;
+	});
+	let shuttingDown = false;
+	const shutdown = async (): Promise<void> => {
+		if (shuttingDown) return stopped;
+		shuttingDown = true;
+		clearInterval(idle);
+		await close(server, rptDir);
+		settle();
+		return stopped;
+	};
+
+	const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
+	const idle = setInterval(() => {
+		if (activity.open === 0 && Date.now() - activity.at >= idleMs) void shutdown();
+	}, Math.max(MIN_IDLE_CHECK_MS, Math.floor(idleMs / IDLE_CHECK_DIVISOR)));
+	// The listening server is what holds the process open; this timer must not,
+	// or a daemon whose server closed would linger for one more interval.
+	idle.unref();
+
+	return { socketPath, close: shutdown, stopped };
 }
 
-function handle(rptDir: string, socket: Socket): void {
+type Activity = { at: number; open: number };
+
+function handle(rptDir: string, socket: Socket, activity: Activity): void {
 	let buffer = "";
 	socket.setEncoding("utf8");
+	activity.at = Date.now();
+	activity.open += 1;
+	// Both, because a socket that errors never fires 'close' on some platforms
+	// and a counter that only goes up means the daemon never goes idle again.
+	let counted = true;
+	const release = (): void => {
+		if (!counted) return;
+		counted = false;
+		activity.open -= 1;
+		activity.at = Date.now();
+	};
+	socket.on("close", release);
 	socket.on("data", (chunk: string) => {
+		activity.at = Date.now();
 		buffer += chunk;
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
@@ -32,7 +85,10 @@ function handle(rptDir: string, socket: Socket): void {
 		if (lines.length === 0) return;
 		void persistAll(rptDir, lines, socket);
 	});
-	socket.on("error", () => socket.destroy());
+	socket.on("error", () => {
+		release();
+		socket.destroy();
+	});
 }
 
 // An acknowledgement is a promise that the event is in the log. The client treats

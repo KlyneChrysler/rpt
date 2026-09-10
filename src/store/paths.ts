@@ -29,6 +29,17 @@ export function approvalPathOf(rptDir: string, runId: RunId): string {
 	return join(runDirOf(rptDir, runId), "approval.json");
 }
 
+export function riskPathOf(rptDir: string, runId: RunId): string {
+	return join(runDirOf(rptDir, runId), "risk.json");
+}
+
+// The daemon's single-start lock. A separate file from the socket, because the
+// socket is what the daemon creates once it has won the right to start, and a
+// lock has to exist before that to decide who wins.
+export function daemonLockOf(rptDir: string): string {
+	return join(rptDir, "daemon.lock");
+}
+
 // The effective rpt.config.json, snapshotted once at run start (see
 // src/app/startRun.ts) so verification and approval judge a run against the
 // config that existed when it began, not a live read that a run in progress

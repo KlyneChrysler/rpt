@@ -126,9 +126,19 @@ delivery that had not happened. The daemon now stays silent until it has a whole
 frame, so the client either gets a real answer or times out and falls back - both
 honest, where the acknowledgement was not.
 
-**What is still true:** nothing starts the daemon automatically, so every event today
-goes down the direct-append path. `startDaemon` is real, tested and reachable from
-the library surface; there is no `rpt daemon` command and no supervisor for it.
+**Starting it.** The first hook of a session finds no daemon, appends its event
+directly, and then starts one - after the event is safely recorded, never before,
+so a process spawn never sits between the agent and its own tool call. Every hook
+after that takes the socket. One daemon runs per repository, enforced by a lock
+rather than by hope, so several hooks firing at once cannot race several daemons
+into existence, and a daemon killed rather than closed leaves a lock that goes
+stale rather than one that blocks every future start.
+
+It shuts itself down after five minutes with nothing connected, because a daemon
+per repository living forever after a session ends is a process leak nobody asked
+for. `rpt daemon` runs one in the foreground for diagnosis, and `RPT_NO_DAEMON=1`
+turns auto-start off entirely for environments where a background process is
+unwelcome - CI, a sandbox - at the cost of a little hook latency and nothing else.
 
 When both routes fail - no daemon, and the direct append also fails - rpt writes a
 `GapRecorded` event as a last resort, deliberately *without* the file lock the direct
@@ -164,6 +174,7 @@ denser form meant to be read back into an agent's own context).
 | `rpt reject <id>` | Records a human rejection, under the same conditions. |
 | `rpt gate` | The pre-commit gate. Exit zero allows the commit; exit one blocks it and explains why on stderr. |
 | `rpt record` | Attaches the attestation note to the commit that just landed. Always exits zero. |
+| `rpt daemon` | Runs the collector daemon in the foreground. Started automatically by the hook path; exposed so it can be started and diagnosed on purpose. |
 | `rpt doctor` | Checks agent hooks, git hooks, config validity, pricing coverage, orphaned worktrees and the daemon. Exits one if any check failed. |
 
 Every command works from anywhere inside the repository, not just its root: rpt walks
@@ -289,11 +300,13 @@ with the repository and is reviewable in a pull request.
 ## The console
 
 Running `rpt` on a terminal opens an Ink console: a dashboard of runs, then run
-detail, events, diff, risk and approval screens.
+detail, events, diff, tests, risk and approval screens. The tests screen keeps
+what rpt observed by running the suite itself separate from the commands the
+agent claimed to run, which is the distinction the whole tool is built around.
 
 ```
 [up/down] select  [enter] open  [q] quit
-[v] events  [d] diff  [r] risk  [a] approve  [esc] back  [q] quit
+[v] events  [d] diff  [t] tests  [r] risk  [a] approve  [esc] back  [q] quit
 ```
 
 The console is a presentation shell over `src/app/readModel.ts`, which returns plain
@@ -311,6 +324,19 @@ with `--format=agent` and reports the output verbatim.
 There is no `/rpt:approve` and no `/rpt:reject`. An agent that could clear its own
 run would make this whole layer decorative.
 
+## risk.json
+
+`rpt verify` writes the assessment beside the verdict, and `rpt gate` writes it
+again for the assessment it actually judged by. The file carries the verdict name
+and the fingerprint of the config it was derived from, so a copy that has stopped
+describing its run says so rather than quietly disagreeing.
+
+Nothing reads it back to make a decision. The gate and the approval both
+re-derive the score from the verdict and the config snapshot on every call, on
+purpose, so editing `risk.json` cannot lower the level anybody is judged at. It
+exists so a person, a listing, or a tool that is not rpt can see what a run
+scored without re-running the engine.
+
 ## Where data lives
 
 Everything rpt writes lives under `.rpt/` at the repository root (ignored by git,
@@ -322,11 +348,14 @@ per the `.gitignore` line `rpt init` adds):
   index.jsonl             # append-only summary row per run (id, task, state, timestamps)
   pricing.json            # per-model USD rates; seeded with model ids, no rates
   start-failures.jsonl    # sessions that could not open a run at all, and why
+  daemon.sock             # the collector daemon's unix socket, while one is running
+  daemon.lock             # held by the one daemon allowed to run for this repository
   runs/
     1/
       events.jsonl        # this run's full, checksummed event log
       config.json         # rpt.config.json snapshotted at this run's start (src/store/runConfig.ts)
       verdict.json        # this run's verifyRun outcome, schema-validated and bound to this run's id
+      risk.json           # the assessment it was judged by, with the verdict and config it came from
       approval.json       # this run's recorded human decision, if any - same treatment as verdict.json
 ```
 

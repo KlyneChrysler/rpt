@@ -3,6 +3,7 @@ import type { DraftEvent, RunId } from "../domain/events.js";
 import { appendEvent, appendGapUnlocked } from "../store/eventLog.js";
 import { socketPathOf } from "../store/paths.js";
 import { encode, OK_REPLY } from "./protocol.js";
+import { ensureDaemon } from "./spawn.js";
 
 const SEND_TIMEOUT_MS = 200;
 
@@ -10,8 +11,25 @@ export type Delivery = "socket" | "direct" | "dropped";
 
 export async function deliver(rptDir: string, runId: RunId, draft: DraftEvent): Promise<Delivery> {
 	if (await sendEvent(socketPathOf(rptDir), runId, draft)) return "socket";
-	if (await appendDirectly(rptDir, runId, draft)) return "direct";
-	return "dropped";
+	const delivery = (await appendDirectly(rptDir, runId, draft)) ? "direct" : "dropped";
+	// After this event is already safely recorded, never before. The daemon is
+	// an optimisation for the events that come after this one - the first tool
+	// call of a session pays the direct-append cost and starts the daemon; the
+	// rest of the session takes the socket. Starting it first would put a
+	// process spawn between the agent and its own tool call, which is exactly
+	// the cost this whole path exists to avoid.
+	await startDaemonForLater(rptDir);
+	return delivery;
+}
+
+// Nothing here can fail loudly. ensureDaemon already swallows its own failures;
+// this guards the call itself so a future change inside it cannot reach a hook.
+async function startDaemonForLater(rptDir: string): Promise<void> {
+	try {
+		await ensureDaemon(rptDir);
+	} catch {
+		// A daemon that will not start costs latency, not correctness.
+	}
 }
 
 export function sendEvent(socketPath: string, runId: RunId, draft: DraftEvent): Promise<boolean> {

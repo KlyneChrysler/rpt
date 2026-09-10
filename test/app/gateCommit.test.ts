@@ -147,6 +147,27 @@ describe("gateCommit", () => {
 		expect(Array.isArray(assessed?.payload.contributions)).toBe(true);
 	});
 
+	it("writes risk.json beside the verdict, bound to what it was derived from", async () => {
+		const repo = await repoWithRun({});
+		await gateCommit(repo);
+		const { readRiskAssessment } = await import("../../src/store/risk.js");
+		const record = await readRiskAssessment(rptDirOf(repo), 1);
+		expect(record?.runId).toBe(1);
+		expect(record?.verdictName).toBe("UNVERIFIED");
+		expect(record?.configFingerprint).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	// The gate re-derives on every call. A hand-edited risk.json claiming LOW
+	// must not be able to lower the level anybody is judged at.
+	it("re-derives rather than reading risk.json back, so an edited copy cannot lower the gate", async () => {
+		const repo = await repoWithRun({});
+		await gateCommit(repo);
+		const { writeRiskAssessment, readRiskAssessment } = await import("../../src/store/risk.js");
+		const real = await readRiskAssessment(rptDirOf(repo), 1);
+		await writeRiskAssessment(rptDirOf(repo), { ...real!, score: 0, level: "LOW", contributions: [] });
+		expect((await gateCommit(repo)).allowed).toBe(false);
+	});
+
 	it("leaves the run loadable and ungapped after gating", async () => {
 		const repo = await repoWithRun({});
 		await gateCommit(repo);

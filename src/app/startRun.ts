@@ -1,4 +1,5 @@
 import { loadConfig } from "../config/load.js";
+import { ensureDaemon } from "../daemon/spawn.js";
 import { fingerprintOf } from "../domain/checksum.js";
 import { createSnapshot, headSha } from "../git/snapshot.js";
 import type { AgentRun } from "../domain/run.js";
@@ -44,5 +45,21 @@ export async function startRun(repoRoot: string, input: StartRunInput): Promise<
 		await upsertRun(rptDir, { id, task: input.task, state: "RUNNING", startedAt, endedAt: null });
 		return { next: id, result: id };
 	});
+	// A session has just opened, so a stream of events is about to arrive: this
+	// is the moment the collector daemon is worth having, rather than after the
+	// first tool call has already paid for its absence. After the run is opened
+	// and never before, and best-effort throughout - see ensureDaemon, which
+	// swallows its own failures, and startDaemonForLater below, which guards the
+	// call itself. rpt failing to optimise must never fail the session.
+	await startDaemonForLater(rptDir);
 	return loadRun(repoRoot, runId);
+}
+
+async function startDaemonForLater(rptDir: string): Promise<void> {
+	try {
+		await ensureDaemon(rptDir);
+	} catch {
+		// A daemon that will not start costs latency, not correctness: every
+		// hook then appends directly under a file lock, exactly as before.
+	}
 }

@@ -12,6 +12,7 @@ import { securityVerifier } from "../verifiers/SecurityVerifier.js";
 import { testQualityVerifier } from "../verifiers/TestQualityVerifier.js";
 import { testVerifier } from "../verifiers/TestVerifier.js";
 import { runVerifiers, type RunContext } from "../verifiers/Verifier.js";
+import { assessAndRecord } from "./assessRun.js";
 import { loadRun } from "./loadRun.js";
 import { resolveRunConfig } from "./loadRunConfig.js";
 
@@ -121,6 +122,12 @@ export async function verifyRun(repoRoot: string, runId: RunId, options: VerifyO
 		// rather than an index claiming a verdict that was never recorded.
 		await writeVerdict(rptDir, verdict);
 		await upsertRun(rptDir, { id: runId, task: run.task, state: verdict.name, startedAt: run.startedAt, endedAt: run.endedAt });
+		// Scored as soon as there is a verdict to score, so risk.json exists
+		// beside verdict.json rather than only appearing once something happens
+		// to gate the run. Nothing downstream reads it back to make a decision -
+		// the gate and the approval both re-derive - so a failure here must not
+		// discard a verdict that is already durably written.
+		await recordAssessmentQuietly(repoRoot, runId, verdict);
 	} catch (error) {
 		// Guarded so a disposal failure here cannot supersede the real cause of
 		// failure above it: without this, a verdict write failure would reach the
@@ -152,6 +159,18 @@ async function reconcileIndex(rptDir: string, run: AgentRun, verdict: Verdict): 
 	const current = (await listRuns(rptDir)).find((entry) => entry.id === run.id);
 	if (current !== undefined && !PRE_VERDICT_STATES.has(current.state)) return;
 	await upsertRun(rptDir, { id: run.id, task: run.task, state: verdict.name, startedAt: run.startedAt, endedAt: run.endedAt });
+}
+
+// The verdict is the load-bearing artefact and it is already on disk by the
+// time this runs. A readable copy of a derived score failing to write is worth
+// reporting and worth nothing else: throwing here would turn a successful
+// verification into a failed one and leave the caller to re-run it.
+async function recordAssessmentQuietly(repoRoot: string, runId: RunId, verdict: Verdict): Promise<void> {
+	try {
+		await assessAndRecord(repoRoot, await loadRun(repoRoot, runId), verdict);
+	} catch (error) {
+		process.stderr.write(`rpt: could not record the risk assessment for run ${runId}: ${errorMessage(error)}\n`);
+	}
 }
 
 export async function disposeQuietly(worktree: Worktree, runId: RunId, pendingError: unknown): Promise<void> {

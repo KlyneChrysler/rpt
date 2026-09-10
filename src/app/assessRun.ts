@@ -1,9 +1,13 @@
 import type { RptConfig } from "../config/schema.js";
+import { fingerprintOf } from "../domain/checksum.js";
 import { RISK_LEVELS } from "../domain/policy.js";
 import type { AgentRun } from "../domain/run.js";
 import type { Verdict } from "../domain/verdict.js";
 import { assessRisk, type RiskAssessment } from "../risk/assess.js";
 import { buildFacts, type RunFacts } from "../risk/facts.js";
+import { appendEvent } from "../store/eventLog.js";
+import { rptDirOf } from "../store/paths.js";
+import { writeRiskAssessment } from "../store/risk.js";
 import { resolveRunConfig } from "./loadRunConfig.js";
 
 export type RunAssessment = {
@@ -57,4 +61,38 @@ function stricter(left: Assessed, right: Assessed): Assessed {
 
 function severityOf(assessed: Assessed): number {
 	return RISK_LEVELS.indexOf(assessed.assessment.level);
+}
+
+// Assesses a run and writes the assessment down: one RiskAssessed event on the
+// timeline, and risk.json beside the run's verdict. Called wherever a run is
+// judged for a decision - when a verdict is produced, and again at the gate -
+// never from a read path, because a command that renders a score must not
+// change the record by being run.
+//
+// The file is a readable copy of a value the engine re-derives on every
+// decision, never an input to one: nothing reads it back to gate or approve, so
+// editing it cannot lower the level anybody is judged at. It carries the verdict
+// name and the config fingerprint it came from, so a copy that has stopped
+// describing its run says so rather than quietly disagreeing.
+export async function assessAndRecord(repoRoot: string, run: AgentRun, verdict: Verdict): Promise<RunAssessment> {
+	const result = await assessRun(repoRoot, run, verdict);
+	const assessedAt = new Date().toISOString();
+	await appendEvent(rptDirOf(repoRoot), run.id, {
+		ts: assessedAt,
+		source: "rpt",
+		kind: "RiskAssessed",
+		payload: {
+			score: result.assessment.score,
+			level: result.assessment.level,
+			contributions: result.assessment.contributions,
+		},
+	});
+	await writeRiskAssessment(rptDirOf(repoRoot), {
+		...result.assessment,
+		runId: run.id,
+		verdictName: verdict.name,
+		configFingerprint: fingerprintOf(result.config),
+		assessedAt,
+	});
+	return result;
 }

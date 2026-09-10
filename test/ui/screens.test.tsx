@@ -6,6 +6,7 @@ import { Diff } from "../../src/ui/screens/Diff.js";
 import { Events } from "../../src/ui/screens/Events.js";
 import { Risk } from "../../src/ui/screens/Risk.js";
 import { RunDetail } from "../../src/ui/screens/RunDetail.js";
+import { Tests } from "../../src/ui/screens/Tests.js";
 
 const model: RunDetailModel = {
 	run: {
@@ -25,7 +26,7 @@ const model: RunDetailModel = {
 		runId: 1842,
 		name: "VERIFIED",
 		results: [
-			{ id: "tests", status: "passed", reason: null, facts: { passed: 184, failed: 0 } },
+			{ id: "tests", status: "passed", reason: null, facts: { passed: 184, failed: 0, command: "pnpm test" } },
 			{ id: "security", status: "skipped", reason: "offline", facts: {} },
 		],
 		decidedAt: "2026-09-09T10:09:00.000Z",
@@ -146,5 +147,40 @@ describe("Risk", () => {
 
 	it("renders a placeholder when the run has no assessment", () => {
 		expect(frameOf(<Risk model={{ ...model, risk: null }} />)).toMatch(/not verified/i);
+	});
+});
+
+describe("Tests", () => {
+	it("shows the counts rpt observed and the command it ran", () => {
+		const frame = frameOf(<Tests model={model} />);
+		expect(frame).toContain("184");
+		expect(frame).toContain("pnpm test");
+	});
+
+	it("separates what rpt observed from what the agent claimed", () => {
+		const frame = frameOf(<Tests model={model} />);
+		expect(frame).toMatch(/OBSERVED BY/);
+		expect(frame).toMatch(/CLAIMED BY THE AGENT/);
+	});
+
+	it("says a count is unknown rather than printing zero for a reporter it could not parse", () => {
+		const unparsed = {
+			...model,
+			verdict: { ...model.verdict!, results: [{ id: "tests", status: "passed" as const, reason: null, facts: {} }] },
+		};
+		expect(frameOf(<Tests model={unparsed} />)).toContain("unknown");
+	});
+
+	it("shows a check that was never run as not run, never as a pass", () => {
+		const partial = {
+			...model,
+			verdict: { ...model.verdict!, results: [{ id: "tests", status: "passed" as const, reason: null, facts: {} }] },
+		};
+		const frame = frameOf(<Tests model={partial} />);
+		expect(frame).toContain("not run");
+	});
+
+	it("tells an unverified run what to do rather than showing an empty screen", () => {
+		expect(frameOf(<Tests model={{ ...model, verdict: null, risk: null }} />)).toMatch(/not verified/i);
 	});
 });

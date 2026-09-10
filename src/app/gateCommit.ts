@@ -7,7 +7,7 @@ import { appendEvent } from "../store/eventLog.js";
 import { rptDirOf } from "../store/paths.js";
 import { activeRun } from "../store/runIndex.js";
 import { readApproval } from "./approveRun.js";
-import { assessRun } from "./assessRun.js";
+import { assessAndRecord } from "./assessRun.js";
 import { loadRun } from "./loadRun.js";
 import { readVerdict, verifyRun } from "./verifyRun.js";
 
@@ -28,9 +28,7 @@ export async function gateCommit(repoRoot: string): Promise<GateOutcome> {
 	// the run's state, so a projection taken beforehand is stale by the time the
 	// assessment reads it.
 	const run = await loadRun(repoRoot, entry.id);
-	const { assessment } = await assessRun(repoRoot, run, verdict);
-
-	await recordAssessment(repoRoot, run.id, assessment);
+	const { assessment } = await assessAndRecord(repoRoot, run, verdict);
 	const judgement = await judge(repoRoot, run, verdict, assessment);
 	await recordGateEvent(repoRoot, run.id, judgement);
 	return judgement.outcome;
@@ -78,20 +76,6 @@ function blocked(run: AgentRun, verdict: Verdict, risk: RiskAssessment, remedy: 
 
 function bypassRequested(): boolean {
 	return process.env.RPT_BYPASS === "1";
-}
-
-// The assessment itself, recorded before the decision that turns on it. Risk
-// scoring is a pure function of facts that are already in the record, so this
-// is not the source of truth for a score - it is the timeline entry that says
-// when a run was judged and at what, which was otherwise the one adjudication
-// step invisible in a run's own log.
-async function recordAssessment(repoRoot: string, runId: RunId, risk: RiskAssessment): Promise<void> {
-	await appendEvent(rptDirOf(repoRoot), runId, {
-		ts: new Date().toISOString(),
-		source: "rpt",
-		kind: "RiskAssessed",
-		payload: { score: risk.score, level: risk.level, contributions: risk.contributions },
-	});
 }
 
 // ApprovalRequested for every outcome, allowed or blocked, and never

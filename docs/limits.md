@@ -33,3 +33,10 @@ narrow, so nobody reads more into it than it can carry.
 - **The attestation digest proves the note matches the local event log.** It
   does not prove the log itself was never tampered with by someone with write
   access to `.rpt/`.
+
+- **Windows is tested, with two checks that do not run there.** CI runs the full
+  suite on Linux, macOS and Windows. The test-command and dependency-audit
+  suites hand POSIX shell fragments to a verifier that runs them through the
+  system shell, and cmd.exe is not that shell, so those two are skipped on
+  Windows. rpt itself uses the console device and a named pipe there rather than
+  `/dev/tty` and a unix socket.

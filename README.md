@@ -47,7 +47,7 @@ whether the gate was bypassed, or whether nobody was needed.
 
 ## Use it
 
-Requires Node 22 and a git repository.
+Requires Node 22 and a git repository. Tested on Linux, macOS and Windows.
 
 ```bash
 git clone https://github.com/KlyneChrysler/rpt.git

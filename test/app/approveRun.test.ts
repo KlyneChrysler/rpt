@@ -1,9 +1,11 @@
+import { mkdir } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { approveRun, isConfirmed, readApproval, rejectRun, type Actor } from "../../src/app/approveRun.js";
+import { actorFromEnvironment, approveRun, isConfirmed, readApproval, rejectRun, type Actor } from "../../src/app/approveRun.js";
 import { initRepo } from "../../src/app/initRepo.js";
 import { readVerdict, verifyRun } from "../../src/app/verifyRun.js";
+import { writeApproval } from "../../src/store/approvals.js";
 import { appendEvent } from "../../src/store/eventLog.js";
-import { rptDirOf } from "../../src/store/paths.js";
+import { rptDirOf, runDirOf } from "../../src/store/paths.js";
 import { driveFakeAgent } from "../support/fakeAgent.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
@@ -165,6 +167,42 @@ describe("readApproval", () => {
 		const stored = await readApproval(repo, 1);
 		const verdict = await readVerdict(repo, 1);
 		expect(stored?.override).toBe(verdict?.name !== "VERIFIED");
+	});
+
+	it("throws when an approval record exists but the run it names has no verdict", async () => {
+		const repo = await makeFixtureRepo();
+		await initRepo(repo);
+		// A run that was never verified: writing an approval record for it
+		// directly (bypassing approveRun) simulates data that outlived its
+		// verdict - e.g. a hand-edited or otherwise corrupted .rpt directory.
+		await mkdir(runDirOf(rptDirOf(repo), 1), { recursive: true });
+		await writeApproval(rptDirOf(repo), {
+			runId: 1,
+			decision: "approved",
+			by: "klyne",
+			at: "2026-09-10T10:00:00.000Z",
+			override: false,
+			level: "LOW",
+		});
+		await expect(readApproval(repo, 1)).rejects.toThrow(/verdict/i);
+	});
+});
+
+describe("actorFromEnvironment", () => {
+	// The one path safe to exercise without a real controlling terminal: a
+	// known agent marker refuses immediately and never touches /dev/tty, so
+	// this cannot hang waiting for input the way the "no marker" path could
+	// in an environment that does have a real terminal attached.
+	it("reports 'agent' immediately, without attempting a terminal confirmation, when a known marker is set", async () => {
+		const original = process.env.CLAUDECODE;
+		process.env.CLAUDECODE = "1";
+		try {
+			const actor = await actorFromEnvironment();
+			expect(actor.agentContext).toBe("agent");
+		} finally {
+			if (original === undefined) delete process.env.CLAUDECODE;
+			else process.env.CLAUDECODE = original;
+		}
 	});
 });
 

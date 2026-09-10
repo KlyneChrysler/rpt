@@ -1,9 +1,11 @@
+import { loadConfig } from "../config/load.js";
 import { createSnapshot, headSha } from "../git/snapshot.js";
 import type { AgentRun } from "../domain/run.js";
 import { appendEvent } from "../store/eventLog.js";
 import { transitionCurrentRun } from "../store/currentRun.js";
 import { rptDirOf } from "../store/paths.js";
 import { allocateRunId, upsertRun } from "../store/runIndex.js";
+import { writeRunConfig } from "../store/runConfig.js";
 import { loadRun } from "./loadRun.js";
 
 export type StartRunInput = { task: string; transcriptPath: string | null };
@@ -17,6 +19,10 @@ export async function startRun(repoRoot: string, input: StartRunInput): Promise<
 		const id = await allocateRunId(rptDir);
 		const baseSha = await createSnapshot(repoRoot, id, "base");
 		const startedAt = new Date().toISOString();
+		// Snapshotted before the run has done anything at all, so the config
+		// this run is later judged against cannot itself be something this
+		// run's own edits produced.
+		await writeRunConfig(rptDir, id, await loadConfig(repoRoot));
 		await appendEvent(rptDir, id, {
 			ts: startedAt,
 			source: "rpt",

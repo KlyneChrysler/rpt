@@ -29,6 +29,15 @@ export function approvalPathOf(rptDir: string, runId: RunId): string {
 	return join(runDirOf(rptDir, runId), "approval.json");
 }
 
+// The effective rpt.config.json, snapshotted once at run start (see
+// src/app/startRun.ts) so verification and approval judge a run against the
+// config that existed when it began, not a live read that a run in progress
+// - or a run that finished before someone got around to reviewing it - can
+// still edit out from under its own evaluation.
+export function runConfigPathOf(rptDir: string, runId: RunId): string {
+	return join(runDirOf(rptDir, runId), "config.json");
+}
+
 export function currentPointerOf(rptDir: string): string {
 	return join(rptDir, "current");
 }

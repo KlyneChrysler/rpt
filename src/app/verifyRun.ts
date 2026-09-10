@@ -1,4 +1,3 @@
-import { loadConfig } from "../config/load.js";
 import type { DraftEvent, RunId } from "../domain/events.js";
 import type { AgentRun } from "../domain/run.js";
 import type { RunState } from "../domain/state.js";
@@ -14,6 +13,7 @@ import { testQualityVerifier } from "../verifiers/TestQualityVerifier.js";
 import { testVerifier } from "../verifiers/TestVerifier.js";
 import { runVerifiers, type RunContext } from "../verifiers/Verifier.js";
 import { loadRun } from "./loadRun.js";
+import { loadRunConfig } from "./loadRunConfig.js";
 
 const VERIFIERS = [testVerifier, diffIntegrityVerifier, securityVerifier, testQualityVerifier];
 
@@ -73,7 +73,9 @@ export async function verifyRun(repoRoot: string, runId: RunId): Promise<Verdict
 			worktree: worktree.path,
 			baseSha: run.baseSha,
 			endSha: run.endSha,
-			config: await loadConfig(repoRoot),
+			// The config snapshotted at this run's start, not a live read - see
+			// src/app/loadRunConfig.ts.
+			config: await loadRunConfig(repoRoot, runId),
 			claims: run.claims,
 		};
 		const results = await runVerifiers(VERIFIERS, context);

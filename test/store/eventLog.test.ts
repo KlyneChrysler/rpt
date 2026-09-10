@@ -2,8 +2,8 @@ import { appendFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { DraftEvent } from "../../src/domain/events.js";
-import { appendEvent, MAX_PAYLOAD_BYTES, readEvents } from "../../src/store/eventLog.js";
+import type { DraftEvent, EventKind } from "../../src/domain/events.js";
+import { appendEvent, appendEventIfNoneOfKind, MAX_PAYLOAD_BYTES, readEvents } from "../../src/store/eventLog.js";
 import { runDirOf } from "../../src/store/paths.js";
 
 let rptDir = "";
@@ -105,5 +105,44 @@ describe("readEvents", () => {
 		const { events, gapCount } = await readEvents(rptDir, 1);
 		expect(events).toHaveLength(2);
 		expect(gapCount).toBe(1);
+	});
+});
+
+describe("appendEventIfNoneOfKind", () => {
+	it("appends when no event of the given kinds exists yet", async () => {
+		await appendEvent(rptDir, 1, draft("RunStarted", { task: "t" }));
+		const result = await appendEventIfNoneOfKind(rptDir, 1, ["ApprovalGranted", "ApprovalDenied"], draft("ApprovalGranted"));
+		expect(result.appended?.kind).toBe("ApprovalGranted");
+		expect(result.conflicting).toBeNull();
+	});
+
+	it("does not append, and returns the existing event, when one of the given kinds already exists", async () => {
+		await appendEvent(rptDir, 1, draft("RunStarted", { task: "t" }));
+		const first = await appendEventIfNoneOfKind(rptDir, 1, ["ApprovalGranted", "ApprovalDenied"], draft("ApprovalGranted", { by: "klyne" }));
+		const second = await appendEventIfNoneOfKind(rptDir, 1, ["ApprovalGranted", "ApprovalDenied"], draft("ApprovalDenied", { by: "someone-else" }));
+		expect(second.appended).toBeNull();
+		expect(second.conflicting?.seq).toBe(first.appended?.seq);
+		expect(second.conflicting?.payload.by).toBe("klyne");
+
+		const { events } = await readEvents(rptDir, 1);
+		expect(events.filter((event) => event.kind === "ApprovalGranted" || event.kind === "ApprovalDenied")).toHaveLength(1);
+	});
+
+	// Fires the race with Promise.all rather than sequentially (see
+	// lifecycle.test.ts's endRun race test for the same pattern), so it
+	// actually exercises the lock rather than two calls that happen to run
+	// one after the other.
+	it("lets only one of two concurrent callers append, even racing", async () => {
+		await appendEvent(rptDir, 1, draft("RunStarted", { task: "t" }));
+		const kinds: EventKind[] = ["ApprovalGranted", "ApprovalDenied"];
+		const [first, second] = await Promise.all([
+			appendEventIfNoneOfKind(rptDir, 1, kinds, draft("ApprovalGranted", { by: "a" })),
+			appendEventIfNoneOfKind(rptDir, 1, kinds, draft("ApprovalGranted", { by: "b" })),
+		]);
+		const appendedCount = [first, second].filter((result) => result.appended !== null).length;
+		expect(appendedCount).toBe(1);
+
+		const { events } = await readEvents(rptDir, 1);
+		expect(events.filter((event) => event.kind === "ApprovalGranted")).toHaveLength(1);
 	});
 });

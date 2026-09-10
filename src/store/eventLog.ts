@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import lockfile from "proper-lockfile";
 import { checksumOf, verifyChecksum } from "../domain/checksum.js";
-import type { AgentEvent, DraftEvent, RunId, StoredEvent } from "../domain/events.js";
+import type { AgentEvent, DraftEvent, EventKind, RunId, StoredEvent } from "../domain/events.js";
 import { withInProcessLock } from "./inProcessLock.js";
 import { eventLogOf } from "./paths.js";
 
@@ -31,6 +31,53 @@ async function appendEventLocked(path: string, runId: RunId, draft: DraftEvent):
 		const stored: StoredEvent = { ...event, checksum: checksumOf(event) };
 		await appendFile(path, `${JSON.stringify(stored)}\n`, "utf8");
 		return event;
+	} finally {
+		await release();
+	}
+}
+
+export type ConditionalAppendResult =
+	| { appended: AgentEvent; conflicting: null }
+	| { appended: null; conflicting: AgentEvent };
+
+// Holds one lock (the same in-process queue plus cross-process file lock
+// appendEvent uses) across the read that checks for an existing event of one
+// of the given kinds and the append itself, so two concurrent callers cannot
+// both observe "none exists yet" and both append - the race that let two
+// ApprovalGranted/ApprovalDenied events land for the same run. Deliberately
+// not implemented as "hold a lock, then call the ordinary appendEvent":
+// appendEvent acquires the same lock itself, and withInProcessLock's queue
+// is not reentrant - a caller already holding it would deadlock waiting on
+// its own turn. Returns the conflicting event, not just a boolean, so a
+// caller can heal from its recorded payload instead of re-deriving one.
+export async function appendEventIfNoneOfKind(
+	rptDir: string,
+	runId: RunId,
+	kinds: readonly EventKind[],
+	draft: DraftEvent,
+): Promise<ConditionalAppendResult> {
+	const path = eventLogOf(rptDir, runId);
+	await mkdir(dirname(path), { recursive: true });
+	await ensureExists(path);
+	return withInProcessLock(path, () => appendIfNoneOfKindLocked(path, runId, kinds, draft));
+}
+
+async function appendIfNoneOfKindLocked(
+	path: string,
+	runId: RunId,
+	kinds: readonly EventKind[],
+	draft: DraftEvent,
+): Promise<ConditionalAppendResult> {
+	const release = await lockfile.lock(path, { retries: { retries: 10, minTimeout: 5, maxTimeout: 100 } });
+	try {
+		await ensureTrailingNewline(path);
+		const lines = (await readOrEmpty(path)).split("\n").filter((line) => line !== "");
+		const conflicting = parseLines(lines).events.find((event) => kinds.includes(event.kind)) ?? null;
+		if (conflicting !== null) return { appended: null, conflicting };
+		const event: AgentEvent = { ...draft, payload: capPayload(draft.payload), runId, seq: lines.length };
+		const stored: StoredEvent = { ...event, checksum: checksumOf(event) };
+		await appendFile(path, `${JSON.stringify(stored)}\n`, "utf8");
+		return { appended: event, conflicting: null };
 	} finally {
 		await release();
 	}
@@ -70,7 +117,10 @@ async function bestEffortSeq(path: string): Promise<number> {
 export async function readEvents(rptDir: string, runId: RunId): Promise<ReadResult> {
 	const text = await readOrEmpty(eventLogOf(rptDir, runId));
 	if (text === "") return { events: [], gapCount: 0 };
-	const lines = text.split("\n").filter((line) => line !== "");
+	return parseLines(text.split("\n").filter((line) => line !== ""));
+}
+
+function parseLines(lines: readonly string[]): ReadResult {
 	const events: AgentEvent[] = [];
 	let gapCount = 0;
 	for (const line of lines) {

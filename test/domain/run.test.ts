@@ -104,22 +104,43 @@ describe("projectRun folds approval events", () => {
 		expect(run.state).toBe("REJECTED");
 	});
 
-	it("throws when an approval event carries an unrecognised verdict name", () => {
-		expect(() => projectRun(1, verifyingRun(draft("ApprovalGranted", { verdictName: "NONSENSE" })))).toThrow(
-			/verdict name/i,
-		);
+	// Regression coverage for the second defect this round found: an illegal
+	// transition used to throw straight out of the fold, so one duplicate or
+	// malformed approval event permanently bricked the run - loadRun, rpt
+	// status, and approveRun/rejectRun's own precondition check could never
+	// succeed again. It is folded into hasGaps instead, the same way a torn
+	// event log line already is, so the run stays loadable and the anomaly is
+	// flagged rather than fatal.
+	it("marks the run gapped, without throwing, when an approval event carries an unrecognised verdict name", () => {
+		const run = projectRun(1, verifyingRun(draft("ApprovalGranted", { verdictName: "NONSENSE" })));
+		expect(run.hasGaps).toBe(true);
+		expect(run.state).toBe("VERIFYING");
 	});
 
-	it("throws replaying a second approval event for a run already decided", () => {
-		expect(() =>
-			projectRun(
-				1,
-				verifyingRun(
-					draft("ApprovalGranted", { verdictName: "VERIFIED" }),
-					draft("ApprovalGranted", { verdictName: "VERIFIED" }),
-				),
+	it("marks the run gapped, without throwing, replaying a second approval event for a run already decided", () => {
+		const run = projectRun(
+			1,
+			verifyingRun(
+				draft("ApprovalGranted", { verdictName: "VERIFIED" }),
+				draft("ApprovalGranted", { verdictName: "VERIFIED" }),
 			),
-		).toThrow();
+		);
+		expect(run.hasGaps).toBe(true);
+		// The first, legitimate event still took effect - a duplicate does not
+		// erase the real decision, only flags itself as suspicious.
+		expect(run.state).toBe("APPROVED");
+	});
+
+	it("marks the run gapped, without throwing, on a rejection conflicting with a prior approval", () => {
+		const run = projectRun(
+			1,
+			verifyingRun(
+				draft("ApprovalGranted", { verdictName: "VERIFIED" }),
+				draft("ApprovalDenied", { verdictName: "VERIFIED" }),
+			),
+		);
+		expect(run.hasGaps).toBe(true);
+		expect(run.state).toBe("APPROVED");
 	});
 });
 

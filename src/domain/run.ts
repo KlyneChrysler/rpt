@@ -90,11 +90,35 @@ function apply(run: AgentRun, event: AgentEvent): AgentRun {
 				endSha: asStringOrNull(event.payload.endSha),
 			};
 		case "ApprovalGranted":
-			return { ...run, state: applyApprovalDecision(run.state, verdictNameOf(event.payload), "approved") };
+			return applyApprovalEvent(run, event.payload, "approved");
 		case "ApprovalDenied":
-			return { ...run, state: applyApprovalDecision(run.state, verdictNameOf(event.payload), "rejected") };
+			return applyApprovalEvent(run, event.payload, "rejected");
 		default:
 			return run;
+	}
+}
+
+// A duplicate or malformed approval event must not make the run permanently
+// unloadable: before this, an illegal transition (a second approval event,
+// or one naming a verdict this run's history disagrees with) threw straight
+// out of the fold, so the one place a decision is recorded became the
+// cheapest possible denial of service against itself - a single bad or
+// replayed event, and the run could never be loaded, statused or decided
+// again. Folding such an event into hasGaps instead - the same treatment a
+// torn or unparseable line already gets in eventLog.ts - keeps the run's
+// last legitimate state visible and flags the anomaly rather than hiding it
+// behind a crash. src/app/approveRun.ts's own precondition check still calls
+// applyApprovalDecision directly and still throws: that call is validating a
+// fresh, live request, not tolerantly folding a log that may already contain
+// imperfect history, and the two have different correct answers to "what do
+// I do with an illegal transition" for exactly that reason.
+function applyApprovalEvent(run: AgentRun, payload: Record<string, unknown>, decision: ApprovalDecision): AgentRun {
+	const verdictName = verdictNameOfSafe(payload);
+	if (verdictName === null) return { ...run, hasGaps: true };
+	try {
+		return { ...run, state: applyApprovalDecision(run.state, verdictName, decision) };
+	} catch {
+		return { ...run, hasGaps: true };
 	}
 }
 
@@ -115,10 +139,9 @@ export function applyApprovalDecision(state: RunState, verdictName: VerdictName,
 	return transition(awaiting, decision === "approved" ? "APPROVED" : "REJECTED");
 }
 
-function verdictNameOf(payload: Record<string, unknown>): VerdictName {
+function verdictNameOfSafe(payload: Record<string, unknown>): VerdictName | null {
 	const value = payload.verdictName;
-	if (value === "VERIFIED" || value === "FAILED" || value === "UNVERIFIED") return value;
-	throw new Error(`approval event carries an unrecognised verdict name: ${JSON.stringify(value)}`);
+	return value === "VERIFIED" || value === "FAILED" || value === "UNVERIFIED" ? value : null;
 }
 
 function withPath(claims: Claims, path: string): Claims {

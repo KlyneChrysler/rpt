@@ -123,15 +123,20 @@ describe("diffIntegrityVerifier", () => {
 	// escaped string that can never equal the agent's claim (the real filename).
 	// That reads as an undeclared change for a file that was declared exactly as
 	// the agent wrote it - a false accusation, which is the one thing this
-	// verifier must never produce. These pin that it doesn't, for an accented
-	// character, a space, and a rename destination, each properly declared.
+	// verifier must never produce. These two - a plain accented character and an
+	// accented rename destination - are the ones that actually reproduce the bug
+	// against a pre-fix parser.
 	it("does not report an undeclared change for a properly declared filename with an accented character", async () => {
 		const result = await diffIntegrityVerifier.run(await contextAfter({ "café.ts": "1\n" }, ["café.ts"]));
 		expect(result.status).toBe("passed");
 		expect(result.facts.undeclared).toEqual([]);
 	});
 
-	it("does not report an undeclared change for a properly declared filename with a space", async () => {
+	// A bare space is not one of git's "unusual" characters, so this one does not
+	// reproduce the quoting bug above - git never quotes it either way. Kept
+	// anyway as coverage of the NUL-delimited parser against an ordinary,
+	// non-trivial filename.
+	it("does not report an undeclared change for a properly declared filename containing a space", async () => {
 		const result = await diffIntegrityVerifier.run(
 			await contextAfter({ "has space.ts": "1\n" }, ["has space.ts"]),
 		);

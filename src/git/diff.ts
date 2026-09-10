@@ -35,13 +35,26 @@ export async function diffNameStatus(
 	return entries;
 }
 
+// git's rename detection is on by default for `git diff`, -M or not, so a
+// numstat record for a pure rename is not "added\tremoved\tpath" like every
+// other record. It is a numeric field whose path slot is empty, followed by
+// the old and new path as two further NUL fields of their own - neither of
+// them a count. Treating every field as its own record would feed those bare
+// filenames to Number() and corrupt the running total to NaN.
 export async function diffStat(
 	repo: string,
 	from: string,
 	to: string,
 ): Promise<{ added: number; removed: number }> {
 	const fields = await nulDelimitedFields(repo, ["diff", "--numstat", "-z", from, to]);
-	return fields.reduce(accumulate, { added: 0, removed: 0 });
+	let totals = { added: 0, removed: 0 };
+	let i = 0;
+	while (i < fields.length) {
+		const [added = "0", removed = "0", path = ""] = (fields[i] ?? "").split("\t");
+		totals = { added: totals.added + numberOf(added), removed: totals.removed + numberOf(removed) };
+		i += path === "" ? 3 : 1;
+	}
+	return totals;
 }
 
 export async function diffPatch(repo: string, from: string, to: string): Promise<string> {
@@ -54,17 +67,6 @@ async function nulDelimitedFields(repo: string, args: string[]): Promise<string[
 	// Every record - and so the whole run of output - ends in a NUL, which
 	// leaves one trailing empty field after the split; drop it.
 	return output.split("\0").slice(0, -1);
-}
-
-function accumulate(
-	totals: { added: number; removed: number },
-	field: string,
-): { added: number; removed: number } {
-	const [added = "0", removed = "0"] = field.split("\t");
-	return {
-		added: totals.added + numberOf(added),
-		removed: totals.removed + numberOf(removed),
-	};
 }
 
 function numberOf(field: string): number {

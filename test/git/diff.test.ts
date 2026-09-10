@@ -72,4 +72,39 @@ describe("diffStat", () => {
 		const end = await createSnapshot(repo, 1, "end");
 		expect(await diffStat(repo, base, end)).toEqual({ added: 0, removed: 3 });
 	});
+
+	// git's own rename detection is on by default for `git diff`, with or
+	// without -M, so a plain rename's numstat record shows up under -z as a
+	// numeric field with an empty third (path) slot, followed by the old and
+	// new path as two further NUL fields - neither of them numeric. A reducer
+	// that treats every NUL field as its own "added\tremoved\tpath" record
+	// feeds those bare filenames to Number() and corrupts the total to NaN.
+	// Asserting the exact number, not just its type, is the point: a reducer
+	// that silently returns NaN would still satisfy `toBeTypeOf("number")`.
+	it("counts zero lines for a pure rename with no content change", async () => {
+		const repo = await makeFixtureRepo();
+		const body = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i};`).join("\n");
+		await writeFile(join(repo, "old.ts"), body);
+		const base = await createSnapshot(repo, 1, "base");
+		await rm(join(repo, "old.ts"));
+		await writeFile(join(repo, "renamed.ts"), body);
+		const end = await createSnapshot(repo, 1, "end");
+		expect(await diffStat(repo, base, end)).toEqual({ added: 0, removed: 0 });
+	});
+
+	it("counts exact totals across a diff mixing a rename with an addition and a modification", async () => {
+		const repo = await makeFixtureRepo();
+		const body = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i};`).join("\n");
+		await writeFile(join(repo, "old.ts"), body);
+		await writeFile(join(repo, "keep.ts"), "a\nb\nc\n");
+		const base = await createSnapshot(repo, 1, "base");
+
+		await rm(join(repo, "old.ts"));
+		await writeFile(join(repo, "renamed.ts"), body); // pure rename: +0/-0
+		await writeFile(join(repo, "keep.ts"), "a\nZ\nc\n"); // modification: +1/-1
+		await writeFile(join(repo, "added.ts"), "x\ny\n"); // addition: +2/-0
+
+		const end = await createSnapshot(repo, 1, "end");
+		expect(await diffStat(repo, base, end)).toEqual({ added: 3, removed: 1 });
+	});
 });

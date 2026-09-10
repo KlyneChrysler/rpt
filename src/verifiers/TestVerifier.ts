@@ -1,8 +1,8 @@
 import { exec } from "node:child_process";
-import { access, lstat, rm, stat, symlink } from "node:fs/promises";
-import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { detectTestCommand } from "./detectTestCommand.js";
+import { linkDependencies } from "./nodeModulesLink.js";
 import { failed, passed, type RunContext, type Verifier, type VerifierResult } from "./Verifier.js";
 
 const run = promisify(exec);
@@ -89,48 +89,20 @@ async function runCommand(
 // node_modules is the one dependency directory every checkout of this ecosystem
 // needs and the worktree, being a bare tracked-files checkout, never has. Other
 // detected ecosystems (go, cargo) resolve dependencies from a global cache rather
-// than a per-project directory, so there is nothing to link for them.
+// than a per-project directory, so there is nothing to link for them. The actual
+// link-or-reuse mechanics are shared with every other verifier that needs the
+// same environment (currently also SecurityVerifier's npm audit).
 async function prepareEnvironment(repoRoot: string, worktree: string): Promise<Environment> {
-	if (!(await exists(join(worktree, "package.json")))) {
-		return { ready: true, description: "no dependency directory required for this project", linkedPath: null };
-	}
-
-	const target = join(worktree, "node_modules");
-	const entry = await inspectEntry(target);
-	if (entry === "usable") {
-		return { ready: true, description: "node_modules already present in the worktree", linkedPath: null };
-	}
-	if (entry === "broken-link") {
-		// A stale link left behind (e.g. an interrupted previous run) points at
-		// nothing usable - clear it so the symlink call below doesn't throw EEXIST.
-		await rm(target, { force: true });
-	}
-
-	const source = join(repoRoot, "node_modules");
-	if (!(await exists(source))) {
-		return {
-			ready: false,
-			description: "no node_modules directory available",
-			reason: "node_modules is missing from the main checkout; cannot establish a runnable environment",
-		};
-	}
-	await symlink(source, target, "dir");
-	return { ready: true, description: "linked node_modules from the main checkout", linkedPath: target };
-}
-
-async function inspectEntry(path: string): Promise<"absent" | "usable" | "broken-link"> {
-	let entryStat;
-	try {
-		entryStat = await lstat(path);
-	} catch {
-		return "absent";
-	}
-	if (!entryStat.isSymbolicLink()) return "usable";
-	try {
-		await stat(path); // follows the link; throws if the target is gone
-		return "usable";
-	} catch {
-		return "broken-link";
+	const link = await linkDependencies(repoRoot, worktree);
+	switch (link.status) {
+		case "not-required":
+			return { ready: true, description: "no dependency directory required for this project", linkedPath: null };
+		case "already-present":
+			return { ready: true, description: "node_modules already present in the worktree", linkedPath: null };
+		case "linked":
+			return { ready: true, description: "linked node_modules from the main checkout", linkedPath: link.linkedPath };
+		case "unavailable":
+			return { ready: false, description: "no node_modules directory available", reason: link.reason };
 	}
 }
 
@@ -234,13 +206,4 @@ function tail(output: string): string {
 
 function skippedWithFacts(reason: string, facts: Record<string, unknown>): VerifierResult {
 	return { id: "tests", status: "skipped", reason, facts };
-}
-
-async function exists(path: string): Promise<boolean> {
-	try {
-		await access(path);
-		return true;
-	} catch {
-		return false;
-	}
 }

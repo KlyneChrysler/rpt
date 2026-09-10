@@ -1,4 +1,5 @@
 import { git } from "./exec.js";
+import { parseHunkHeader } from "./hunkHeader.js";
 
 export type DiffStatus = "A" | "M" | "D" | "R";
 // oldPath is set only for a rename (status "R"): git reports a rename under its
@@ -59,6 +60,32 @@ export async function diffStat(
 
 export async function diffPatch(repo: string, from: string, to: string): Promise<string> {
 	return git(repo, ["diff", "--unified=3", from, to]);
+}
+
+// --unified=0 drops all context lines, so every line a hunk's header claims
+// for the new file is a genuinely changed one - no need to walk hunk content
+// the way a content-scanning parser (scanSecrets) has to. A pure deletion's
+// hunk header carries a zero-length new-file range ("+0,0"), so it naturally
+// contributes no lines; "+++ /dev/null" for that same deletion is still
+// matched explicitly, so a later hunk can never be misattributed to whatever
+// file happened to be current before it.
+export async function changedLines(repo: string, from: string, to: string): Promise<Map<string, Set<number>>> {
+	const patch = await git(repo, ["diff", "--unified=0", from, to]);
+	const changed = new Map<string, Set<number>>();
+	let file: string | null = null;
+	for (const line of patch.split("\n")) {
+		if (line.startsWith("+++ ")) {
+			file = line.startsWith("+++ b/") ? line.slice("+++ b/".length) : null;
+			if (file !== null) changed.set(file, new Set());
+			continue;
+		}
+		if (file === null || !line.startsWith("@@")) continue;
+		const header = parseHunkHeader(line);
+		if (header === null) continue;
+		const lines = changed.get(file)!;
+		for (let offset = 0; offset < header.newCount; offset += 1) lines.add(header.newStart + offset);
+	}
+	return changed;
 }
 
 async function nulDelimitedFields(repo: string, args: string[]): Promise<string[]> {

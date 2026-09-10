@@ -1,18 +1,10 @@
+import { parseHunkHeader } from "../git/hunkHeader.js";
 import { PLACEHOLDER, SECRET_NAME, SECRET_PATTERNS } from "./secretPatterns.js";
 
 export type SecretFinding = { rule: string; path: string; line: number };
 
 const MIN_SECRET_LENGTH = 20;
 const MIN_ENTROPY_BITS_PER_CHAR = 3.5;
-
-// A hunk header ("@@ -oldStart[,oldLines] +newStart[,newLines] @@") carries the
-// real starting line number of what follows in the new file. Counting added
-// lines ordinally from the top of the file, instead of resetting to this
-// number at each hunk, gives the right line for a single-hunk diff and a wrong
-// one for any later hunk - and a confidently wrong location in a security
-// finding is worse than none, since it is what lands in the event log and a
-// git note.
-const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 export function scanSecrets(patch: string): SecretFinding[] {
 	const findings: SecretFinding[] = [];
@@ -26,9 +18,14 @@ export function scanSecrets(patch: string): SecretFinding[] {
 			if (raw.startsWith("+++ b/")) path = raw.slice("+++ b/".length);
 			continue;
 		}
-		const hunkStart = HUNK_HEADER.exec(raw)?.[1];
-		if (hunkStart !== undefined) {
-			line = Number(hunkStart);
+		// Counting added lines ordinally from the top of the file, instead of
+		// resetting to the hunk header's real starting line, gives the right
+		// answer for a single-hunk diff and a wrong one for any later hunk - and
+		// a confidently wrong location in a security finding is worse than none,
+		// since it is what lands in the event log and a git note.
+		const header = parseHunkHeader(raw);
+		if (header !== null) {
+			line = header.newStart;
 			continue;
 		}
 		if (raw.startsWith("+")) {

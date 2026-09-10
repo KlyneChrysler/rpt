@@ -1,7 +1,7 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { diffNameStatus, diffStat } from "../../src/git/diff.js";
+import { changedLines, diffNameStatus, diffStat } from "../../src/git/diff.js";
 import { createSnapshot } from "../../src/git/snapshot.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
@@ -106,5 +106,47 @@ describe("diffStat", () => {
 
 		const end = await createSnapshot(repo, 1, "end");
 		expect(await diffStat(repo, base, end)).toEqual({ added: 3, removed: 1 });
+	});
+});
+
+describe("changedLines", () => {
+	it("reports every line of a newly added file", async () => {
+		const repo = await makeFixtureRepo();
+		const base = await createSnapshot(repo, 1, "base");
+		await writeFile(join(repo, "auth.ts"), "line1\nline2\nline3\n");
+		const end = await createSnapshot(repo, 1, "end");
+		const changed = await changedLines(repo, base, end);
+		expect([...(changed.get("auth.ts") ?? [])]).toEqual([1, 2, 3]);
+	});
+
+	it("reports the real new-file line numbers across multiple hunks in one file", async () => {
+		const repo = await makeFixtureRepo();
+		const body = Array.from({ length: 20 }, (_, i) => `line${i}`).join("\n");
+		await writeFile(join(repo, "auth.ts"), `${body}\n`);
+		const base = await createSnapshot(repo, 1, "base");
+		const lines = body.split("\n");
+		lines[1] = "changed-near-top";
+		lines[18] = "changed-near-bottom";
+		await writeFile(join(repo, "auth.ts"), `${lines.join("\n")}\n`);
+		const end = await createSnapshot(repo, 1, "end");
+		const changed = await changedLines(repo, base, end);
+		expect([...(changed.get("auth.ts") ?? [])]).toEqual([2, 19]);
+	});
+
+	it("reports nothing for a file that was only deleted", async () => {
+		const repo = await makeFixtureRepo();
+		await writeFile(join(repo, "gone.ts"), "a\nb\nc\n");
+		const base = await createSnapshot(repo, 1, "base");
+		await rm(join(repo, "gone.ts"));
+		const end = await createSnapshot(repo, 1, "end");
+		const changed = await changedLines(repo, base, end);
+		expect(changed.get("gone.ts") ?? new Set()).toEqual(new Set());
+	});
+
+	it("is empty when nothing changed", async () => {
+		const repo = await makeFixtureRepo();
+		const base = await createSnapshot(repo, 1, "base");
+		const end = await createSnapshot(repo, 1, "end");
+		expect((await changedLines(repo, base, end)).size).toBe(0);
 	});
 });

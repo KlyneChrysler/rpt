@@ -62,6 +62,16 @@ describe("assessRisk", () => {
 		expect(assessment.contributions.find((entry) => entry.id === "files-changed-count")?.points).toBe(10);
 	});
 
+	it("charges thirty for a run that edits rpt's own config file", () => {
+		const assessment = assessRisk(facts({ pathsChanged: ["rpt.config.json"] }), DEFAULT_CONFIG);
+		expect(assessment.contributions.find((entry) => entry.id === "rpt-config-changed")?.points).toBe(30);
+	});
+
+	it("does not charge the config-changed rule for an unrelated file", () => {
+		const assessment = assessRisk(facts({ pathsChanged: ["src/a.ts"] }), DEFAULT_CONFIG);
+		expect(assessment.contributions.find((entry) => entry.id === "rpt-config-changed")).toBeUndefined();
+	});
+
 	it("credits added regression tests", () => {
 		// clean's coverage (measured 20, fraction 1) is high, so it does not
 		// contradict the credit - see the "tests-added credit" describe block

@@ -35,4 +35,29 @@ describe("loadConfig", () => {
 		const bad = { thresholds: { review: 60, approval: 51, block: 81 } };
 		await expect(loadConfig(await repoWith(bad))).rejects.toThrow(/ascending/i);
 	});
+
+	// A run can edit rpt.config.json as freely as any other file in the repo,
+	// and loadConfig always reads whatever it says right now - so raising
+	// "block" past what a score can ever reach would self-clear the very run
+	// that raised it. Capping thresholds to the same [0, 100] range a score is
+	// clamped to closes that off without needing anyone to have forged anything.
+	it("rejects a block threshold above the score range", async () => {
+		const bad = { thresholds: { review: 21, approval: 51, block: 101 } };
+		await expect(loadConfig(await repoWith(bad))).rejects.toThrow();
+	});
+
+	it("rejects a negative threshold", async () => {
+		const bad = { thresholds: { review: -1, approval: 51, block: 81 } };
+		await expect(loadConfig(await repoWith(bad))).rejects.toThrow();
+	});
+
+	it("rejects a rule override below zero", async () => {
+		const bad = { ruleOverrides: { "dependency-changed": -20 } };
+		await expect(loadConfig(await repoWith(bad))).rejects.toThrow();
+	});
+
+	it("accepts a rule override of exactly zero", async () => {
+		const config = await loadConfig(await repoWith({ ruleOverrides: { "dependency-changed": 0 } }));
+		expect(config.ruleOverrides["dependency-changed"]).toBe(0);
+	});
 });

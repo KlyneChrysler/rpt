@@ -46,6 +46,13 @@ function testsAddedWithoutContradictingCoverage(facts: RunFacts): boolean {
 }
 
 export const DEFAULT_RULES: readonly RiskRule[] = [
+	// A run that edits rpt.config.json is editing the very thresholds and
+	// overrides its own score will be judged against, using loadConfig's own
+	// live read of that file - the config schema's [0, 100] cap and the
+	// overrides floor (config/schema.ts) bound how far that can go, but this
+	// rule makes the edit itself a scored, visible finding rather than an
+	// invisible one, on the same footing as the other sensitive-path rules.
+	{ id: "rpt-config-changed", label: "rpt's own configuration file was modified", points: 30, when: (facts) => facts.pathsChanged.includes("rpt.config.json") },
 	{ id: "sensitive-auth", label: "Authentication or authorization paths modified", points: 25, when: (facts) => hasCategory(facts, "auth") },
 	{ id: "sensitive-database", label: "Database access or migration paths modified", points: 20, when: (facts) => hasCategory(facts, "database") },
 	{ id: "sensitive-infra", label: "Infrastructure or deployment paths modified", points: 20, when: (facts) => hasCategory(facts, "infra") },

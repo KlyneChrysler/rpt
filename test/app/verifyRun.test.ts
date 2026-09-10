@@ -110,6 +110,61 @@ describe("verifyRun", () => {
 		expect(after?.state).toBe("UNVERIFIED");
 	});
 
+	// The state a crash mid-verification leaves behind. Refusing to resume it
+	// automatically is correct - a second VerificationStarted gaps the log - but
+	// with the commit gate installed, a run stuck here blocks every commit in
+	// the repository, so there has to be a way out that is a person's decision
+	// rather than a retry's side effect.
+	describe("a run a crash left mid-verification", () => {
+		async function interruptedRun(): Promise<string> {
+			const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
+			const { rptDirOf } = await import("../../src/store/paths.js");
+			const { appendEvent } = await import("../../src/store/eventLog.js");
+			await appendEvent(rptDirOf(repo), 1, {
+				ts: new Date().toISOString(),
+				source: "rpt",
+				kind: "VerificationStarted",
+				payload: {},
+			});
+			return repo;
+		}
+
+		it("refuses to resume automatically, and names the command that does", async () => {
+			await expect(verifyRun(await interruptedRun(), 1)).rejects.toThrow(/--resume/);
+		});
+
+		it("verifies the run when a caller asks for it explicitly", async () => {
+			const verdict = await verifyRun(await interruptedRun(), 1, { resume: true });
+			expect(verdict.results.length).toBeGreaterThan(0);
+		});
+
+		it("can never produce VERIFIED, because the interruption is itself a gap", async () => {
+			const repo = await interruptedRun();
+			const verdict = await verifyRun(repo, 1, { resume: true });
+			expect(verdict.name).not.toBe("VERIFIED");
+			expect((await loadRun(repo, 1)).hasGaps).toBe(true);
+		});
+
+		it("records why the gap is there rather than leaving an unexplained one", async () => {
+			const repo = await interruptedRun();
+			await verifyRun(repo, 1, { resume: true });
+			const { readEvents } = await import("../../src/store/eventLog.js");
+			const { rptDirOf } = await import("../../src/store/paths.js");
+			const { events } = await readEvents(rptDirOf(repo), 1);
+			const gap = events.find((event) => event.kind === "GapRecorded");
+			expect(String(gap?.payload.reason)).toMatch(/interrupted/i);
+		});
+
+		it("still returns a verdict already on disk without needing resume at all", async () => {
+			const repo = await interruptedRun();
+			const { rptDirOf } = await import("../../src/store/paths.js");
+			const { writeVerdict } = await import("../../src/store/verdicts.js");
+			const staged = { runId: 1, name: "UNVERIFIED" as const, results: [], decidedAt: new Date().toISOString() };
+			await writeVerdict(rptDirOf(repo), staged);
+			expect(await verifyRun(repo, 1)).toEqual(staged);
+		});
+	});
+
 	it("does not drag an index that has moved past the verdict stage backwards", async () => {
 		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
 		await verifyRun(repo, 1);

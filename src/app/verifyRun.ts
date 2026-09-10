@@ -23,7 +23,15 @@ const VERIFIERS = [testVerifier, diffIntegrityVerifier, securityVerifier, testQu
 // re-asserting the verdict's own state over top of it. See reconcileIndex.
 const PRE_VERDICT_STATES: ReadonlySet<RunState> = new Set(["RUNNING", "ENDED", "VERIFYING"]);
 
-export async function verifyRun(repoRoot: string, runId: RunId): Promise<Verdict> {
+export type VerifyOptions = {
+	// Re-enter verification for a run left mid-verification by a crash. The
+	// resulting run is gapped and therefore can never be VERIFIED, which is the
+	// honest outcome for a run whose verification was interrupted - and it is
+	// what makes this a recovery rather than a way to re-roll a verdict.
+	resume?: boolean;
+};
+
+export async function verifyRun(repoRoot: string, runId: RunId, options: VerifyOptions = {}): Promise<Verdict> {
 	const rptDir = rptDirOf(repoRoot);
 	const run = await loadRun(repoRoot, runId);
 
@@ -50,16 +58,36 @@ export async function verifyRun(repoRoot: string, runId: RunId): Promise<Verdict
 	// index row for it - that makes retry the correct, complete recovery action
 	// for a crash between writing the verdict and updating the index, not just a
 	// safe no-op. A run with no verdict yet has no prior attempt to resume from
-	// safely, so that case fails loudly instead of guessing.
+	// safely, so that case refuses unless the caller asks for it explicitly.
+	let hasGaps = run.hasGaps;
 	if (run.state !== "ENDED") {
 		const existing = await readVerdictFile(rptDir, runId);
-		if (existing === null) {
+		if (existing !== null) {
+			await reconcileIndex(rptDir, run, existing);
+			return existing;
+		}
+		// Never automatic, because re-entering verification appends a second
+		// VerificationStarted, which the fold answers with a gap - and a gap
+		// disqualifies the run from VERIFIED for good. That cost has to be a
+		// person's decision, not a retry's side effect. But it does have to be
+		// available: with the commit gate installed, a run stuck here blocks
+		// every commit in the repository, and "wedged until someone hand-edits
+		// .rpt" is a worse answer than "recoverable, and the record says the
+		// verification was interrupted".
+		if (options.resume !== true) {
 			throw new Error(
-				`run ${runId} is in state ${run.state} with no recorded verdict - a previous verification attempt was interrupted before one was written, so this run cannot be safely re-verified automatically`,
+				`run ${runId} is in state ${run.state} with no recorded verdict - a previous verification attempt was interrupted before one was written, so this run cannot be safely re-verified automatically; run "rpt verify ${runId} --resume" to verify it anyway, which records the interruption as a gap and so can never produce VERIFIED`,
 			);
 		}
-		await reconcileIndex(rptDir, run, existing);
-		return existing;
+		await appendEvent(rptDir, runId, marker("GapRecorded", {
+			reason: "verification was interrupted before a verdict was written and has been resumed",
+			lost: 0,
+		}));
+		// Tracked here rather than re-projecting: the gap was appended after this
+		// call's own projection was taken, so run.hasGaps below is stale by
+		// exactly this event, and decideVerdict reading the stale value would
+		// hand a resumed run the VERIFIED it must never be able to reach.
+		hasGaps = true;
 	}
 
 	await appendEvent(rptDir, runId, marker("VerificationStarted", {}));
@@ -84,7 +112,7 @@ export async function verifyRun(repoRoot: string, runId: RunId): Promise<Verdict
 
 		verdict = {
 			runId,
-			name: decideVerdict(results, run.hasGaps),
+			name: decideVerdict(results, hasGaps),
 			results,
 			decidedAt: new Date().toISOString(),
 		};
@@ -140,6 +168,6 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-function marker(kind: "VerificationStarted" | "VerifierCompleted", payload: Record<string, unknown>): DraftEvent {
+function marker(kind: "VerificationStarted" | "VerifierCompleted" | "GapRecorded", payload: Record<string, unknown>): DraftEvent {
 	return { ts: new Date().toISOString(), source: "rpt", kind, payload };
 }

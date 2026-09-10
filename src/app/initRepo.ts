@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { installHooks } from "../collectors/claudeCodeHooks.js";
+import { modelsInTranscripts } from "../collectors/transcriptDiscovery.js";
 import { installGitHooks } from "./installGitHooks.js";
 import { DEFAULT_CONFIG } from "../config/load.js";
 import { findGitRoot } from "../store/paths.js";
@@ -13,6 +14,10 @@ export type InitReport = {
 	gitignoreUpdated: boolean;
 	configCreated: boolean;
 	pricingCreated: boolean;
+	// The model ids the scaffolded pricing file was seeded with, at null rates.
+	// Empty for a repository Claude Code has never run in, which is the ordinary
+	// case, and empty when the pricing file already existed.
+	pricingModelsSeeded: string[];
 };
 
 // `rpt init` installs both surfaces rpt needs to observe and to gate: the
@@ -37,13 +42,16 @@ export async function initRepo(startDir: string): Promise<InitReport> {
 	}
 	await installHooks(repoRoot);
 	const gitHooksInstalled = await installGitHooks(repoRoot);
+	const models = await modelsInTranscripts(repoRoot);
+	const pricingCreated = await createPricingFileIfAbsent(repoRoot, models);
 	return {
 		repoRoot,
 		hooksInstalled: true,
 		gitHooksInstalled,
 		gitignoreUpdated: await ensureIgnored(repoRoot),
 		configCreated: await createIfAbsent(join(repoRoot, "rpt.config.json"), configTemplate()),
-		pricingCreated: await createPricingFileIfAbsent(repoRoot),
+		pricingCreated,
+		pricingModelsSeeded: pricingCreated ? models : [],
 	};
 }
 

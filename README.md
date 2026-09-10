@@ -69,11 +69,17 @@ two files if they don't already exist:
   isolation is not a sandbox: the command runs with the same OS-level privileges as
   `rpt` itself, and rpt does not restrict what it can read, write, or reach over
   the network.**
-- `.rpt/pricing.json` - **ships empty.** rpt does not know what any model costs and
-  will not guess. A model with no entry here reports no cost for its usage, not an
-  invented one. Fill in `input`, `output`, `cacheRead` and `cacheCreate` (USD per
-  million tokens) per model yourself if you want that pricing function to have
-  anything to work with. Each rate must be a finite, non-negative number or an
+- `.rpt/pricing.json` - **ships with no rates.** rpt does not know what any model
+  costs and will not guess. It does name the models it can see this repository has
+  actually used, read from Claude Code's own session transcripts, each seeded with
+  explicit `null` rates - so filling the file in means editing a list rather than
+  compiling one, and a model id is not something anybody remembers. A model with a
+  `null` or missing rate reports no cost for its usage, not an invented one. Fill
+  in `input`, `output`, `cacheRead` and `cacheCreate` (USD per million tokens) per
+  model yourself if you want that pricing function to have anything to work with.
+  Seeding is a convenience and degrades quietly: a repository Claude Code has never
+  run in, or a transcript layout that has moved, produces an empty rates object and
+  no error. Each rate must be a finite, non-negative number or an
   explicit `null` meaning "known to be unknown"; an entry that is anything else -
   a missing key, an extra key, a string, a negative number - is dropped at load
   time with a line on stderr and its model reports no cost, because a
@@ -113,13 +119,16 @@ to the log. A frame the daemon could not decode, or could not append, is answere
 failed rather than acknowledged, so the hook falls back instead of believing a write
 that never happened.
 
-**Known limitation, carried to the next plan.** That acknowledgement is per batch of
-complete lines, not per frame across chunk boundaries: if a frame arrives split across
-more than one TCP chunk, the daemon has no complete line to persist yet and still
-answers `ok` for the empty batch, so the hook believes a delivery that has not
-happened. It is a real hole in the guarantee above, verified against the built daemon.
-Nothing in Plan 1 starts the daemon, so nothing today can reach it - every event goes
-down the direct-append path. It is fixed in the plan that actually starts the daemon.
+That acknowledgement used to be per batch of complete lines rather than per frame: a
+frame arriving split across more than one TCP chunk left the daemon no complete line
+to persist, and it answered `ok` for the empty batch anyway, so the hook believed a
+delivery that had not happened. The daemon now stays silent until it has a whole
+frame, so the client either gets a real answer or times out and falls back - both
+honest, where the acknowledgement was not.
+
+**What is still true:** nothing starts the daemon automatically, so every event today
+goes down the direct-append path. `startDaemon` is real, tested and reachable from
+the library surface; there is no `rpt daemon` command and no supervisor for it.
 
 When both routes fail - no daemon, and the direct append also fails - rpt writes a
 `GapRecorded` event as a last resort, deliberately *without* the file lock the direct
@@ -148,7 +157,7 @@ denser form meant to be read back into an agent's own context).
 | `rpt runs` | Lists every run recorded in this repository, warning first about corrupt index lines and about sessions that failed to start. |
 | `rpt run <id>` | Shows one run: task, state, claims, and model usage counts. |
 | `rpt events <id>` (alias `rpt replay`) | Prints the full event timeline for a run, warning first if that log has unreadable lines. |
-| `rpt verify <id>` | Runs every enabled verifier against the run's end snapshot in an isolated worktree and prints the verdict. |
+| `rpt verify <id>` | Runs every enabled verifier against the run's end snapshot in an isolated worktree and prints the verdict. `--resume` recovers a run a crash left mid-verification. |
 | `rpt risk <id>` | Prints the itemised risk assessment. Refuses, naming `rpt verify`, when the run has no verdict yet. |
 | `rpt diff <id>` | Prints the diff rpt observed between the run's base and end snapshots. |
 | `rpt approve <id>` | Records a human approval. Requires a terminal, refuses inside a known agent context, and asks for a typed confirmation. |
@@ -165,6 +174,50 @@ history and a zero exit, which is what a genuinely empty repository looks like.
 The only commands that change anything are `rpt init`, `rpt verify`, `rpt approve`,
 `rpt reject`, `rpt record`, and the internal `rpt hook` entry point Claude Code
 itself calls. Everything else reads.
+
+## Verification and the `testQuality` switch
+
+`rpt verify` runs four checks against the run's end snapshot in an isolated
+worktree: the project's own test command, diff integrity against the agent's
+claims, a secret scan plus dependency audit, and change coverage.
+
+A verdict is VERIFIED only when every check that ran passed and the log has no
+gaps. **A skip is not a pass**: a check rpt could not run means rpt does not
+know, and not knowing sends the run to UNVERIFIED, which the gate treats as
+needing a human. That is the intended behaviour, and it is why a repository
+with no coverage command is gated on every commit by default.
+
+`verifiers.testQuality` has three settings:
+
+| Setting | Behaviour |
+|---|---|
+| `require` | Change coverage below 50% fails the run. |
+| `warn` (default) | Change coverage below 50% still passes, but the reason states the shortfall and the number reaches the risk engine. Coverage that could not be measured at all is still a skip, so the run is UNVERIFIED. |
+| `off` | The check is not run and contributes no result. The verdict is decided over the checks that did run. |
+
+### Recovering a run a crash left mid-verification
+
+A crash between starting verification and writing the verdict leaves a run in
+`VERIFYING` with nothing recorded. rpt refuses to re-enter that automatically,
+because doing so appends a second start event and gaps the log. With the gate
+installed, that refusal blocks every commit in the repository, so there is an
+explicit way out:
+
+```bash
+rpt verify <id> --resume
+```
+
+It records the interruption as a gap with its reason, then verifies. Because the
+run is now gapped it can never reach VERIFIED, so a commit on it still needs a
+human. That is the trade being made deliberately: a recovered run is honest about
+having been interrupted rather than being wedged or quietly re-rolled.
+
+`off` removes the check rather than skipping it, deliberately. A skip is missing
+evidence and downgrades a run forever; a check a project chose not to run is not
+missing evidence, and treating it as such meant `off` gated every commit in that
+repository permanently. Nothing is hidden by the omission: the verdict lists the
+checks that ran, and the config snapshot it was judged under is fingerprinted and
+drift-checked.
 
 ## The commit gate
 
@@ -267,7 +320,7 @@ per the `.gitignore` line `rpt init` adds):
 .rpt/
   current                 # pointer to the currently-open run, if any
   index.jsonl             # append-only summary row per run (id, task, state, timestamps)
-  pricing.json            # per-model USD rates; ships empty
+  pricing.json            # per-model USD rates; seeded with model ids, no rates
   start-failures.jsonl    # sessions that could not open a run at all, and why
   runs/
     1/

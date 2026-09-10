@@ -36,6 +36,33 @@ describe("daemon round trip", () => {
 		expect(events[0]?.payload.path).toBe("a.ts");
 	});
 
+	// The hole this closes, verified against the real server rather than
+	// reasoned about: a frame arriving split across two writes leaves the
+	// daemon no complete line to persist. It used to answer "ok" for that empty
+	// batch, so the client believed a delivery that had not happened and
+	// skipped both its fallback append and the gap behind it.
+	it("never acknowledges a frame that has only partly arrived", async () => {
+		daemon = await startDaemon(rptDir);
+		const frame = `${JSON.stringify({ runId: 1, draft })}\n`;
+		const half = Math.floor(frame.length / 2);
+		const replies: string[] = [];
+		const socket = connect(daemon.socketPath);
+		socket.setEncoding("utf8");
+		socket.on("data", (chunk: string) => replies.push(chunk));
+		await new Promise<void>((resolve) => socket.on("connect", () => resolve()));
+
+		socket.write(frame.slice(0, half));
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(replies).toEqual([]);
+		expect((await readEvents(rptDir, 1)).events).toEqual([]);
+
+		socket.write(frame.slice(half));
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(replies.join("").trim()).toBe("ok");
+		expect((await readEvents(rptDir, 1)).events).toHaveLength(1);
+		socket.destroy();
+	});
+
 	it("handles many events without reordering them", async () => {
 		daemon = await startDaemon(rptDir);
 		for (let index = 0; index < 30; index += 1) {

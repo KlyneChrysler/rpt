@@ -14,8 +14,14 @@ const MIN_CHANGE_COVERAGE = 0.5;
 
 export const testQualityVerifier: Verifier = {
 	id: "test-quality",
+	// "off" removes this check from the verdict entirely rather than skipping
+	// it. A skip is evidence rpt could not gather and correctly downgrades a run
+	// to UNVERIFIED; a check nobody asked for is not missing evidence, and
+	// treating it as such made "off" gate every commit in the repository forever.
+	enabledFor(config): boolean {
+		return config.verifiers.testQuality !== "off";
+	},
 	async run(context: RunContext): Promise<VerifierResult> {
-		if (context.config.verifiers.testQuality === "off") return skippedWithFacts("disabled in config", {});
 		const command = context.config.coverageCommand;
 		if (command === null) return skippedWithFacts("no coverage command configured", {});
 

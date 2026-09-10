@@ -126,6 +126,16 @@ describe("initRepo", () => {
 		expect(JSON.parse(await read(repo, "rpt.config.json"))).toHaveProperty("thresholds");
 	});
 
+	it("reports which models the pricing file was seeded with", async () => {
+		const repo = await makeFixtureRepo();
+		const report = await initRepo(repo);
+		// A fixture repository under the OS temp directory has no Claude Code
+		// transcript history, so there is nothing to seed. What matters is that
+		// the field is present and honest rather than absent.
+		expect(report.pricingModelsSeeded).toEqual([]);
+		expect(JSON.parse(await read(repo, ".rpt/pricing.json")).rates).toEqual({});
+	});
+
 	it("installs the git pre-commit gate hook", async () => {
 		const repo = await makeFixtureRepo();
 		const report = await initRepo(repo);

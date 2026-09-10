@@ -137,6 +137,16 @@ describe("gateCommit", () => {
 		expect(events.some((event) => event.payload.bypass === true)).toBe(false);
 	});
 
+	it("records the assessment it judged on, so the timeline shows when and at what", async () => {
+		const repo = await repoWithRun({});
+		await gateCommit(repo);
+		const { events } = await readEvents(rptDirOf(repo), 1);
+		const assessed = events.find((event) => event.kind === "RiskAssessed");
+		expect(typeof assessed?.payload.score).toBe("number");
+		expect(assessed?.payload.level).toMatch(/LOW|MEDIUM|HIGH|CRITICAL/);
+		expect(Array.isArray(assessed?.payload.contributions)).toBe(true);
+	});
+
 	it("leaves the run loadable and ungapped after gating", async () => {
 		const repo = await repoWithRun({});
 		await gateCommit(repo);

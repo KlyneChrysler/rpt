@@ -205,3 +205,34 @@ describe("runVerifiers", () => {
 		expect(result.facts).toEqual({});
 	});
 });
+
+// A verifier a config turned off contributes no result at all. It must not
+// contribute a skip: under this project's rule that missing evidence is never a
+// pass, a skip downgrades the run to UNVERIFIED forever, so an "off" switch that
+// emitted one gated every commit in that repository permanently.
+describe("a verifier disabled by config", () => {
+	it("is not run and contributes no result", async () => {
+		let ran = false;
+		const disabled: Verifier = {
+			id: "disabled",
+			enabledFor: () => false,
+			run: async () => {
+				ran = true;
+				return passed("disabled");
+			},
+		};
+		const results = await runVerifiers([disabled, verifier("enabled", async () => passed("enabled"))], context);
+		expect(ran).toBe(false);
+		expect(results.map((result) => result.id)).toEqual(["enabled"]);
+	});
+
+	it("still runs when its predicate says it is enabled", async () => {
+		const enabled: Verifier = { id: "on", enabledFor: () => true, run: async () => passed("on") };
+		expect((await runVerifiers([enabled], context)).map((result) => result.id)).toEqual(["on"]);
+	});
+
+	it("runs a verifier that has no opinion about being enabled", async () => {
+		const results = await runVerifiers([verifier("plain", async () => passed("plain"))], context);
+		expect(results.map((result) => result.id)).toEqual(["plain"]);
+	});
+});

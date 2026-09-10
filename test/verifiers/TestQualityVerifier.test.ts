@@ -78,12 +78,17 @@ describe("testQualityVerifier", () => {
 		expect(result.status).toBe("passed");
 	});
 
-	it("skips when disabled via config, without ever touching the coverage command", async () => {
+	// "off" makes this verifier contribute nothing rather than contribute a
+	// skip. A skip is missing evidence and correctly downgrades a run to
+	// UNVERIFIED forever; a check a project deliberately turned off is not
+	// missing evidence, and emitting one meant "off" gated every commit in that
+	// repository permanently. runVerifiers is what honours the predicate, so
+	// this asserts the predicate rather than a result that is never produced.
+	it("declares itself disabled when the config turns it off, so it is never run at all", async () => {
 		const context = await contextWith({ coverageCommand: "true" });
-		context.config = { ...context.config, verifiers: { testQuality: "off" } };
-		const result = await testQualityVerifier.run(context);
-		expect(result.status).toBe("skipped");
-		expect(result.reason).toMatch(/disabled/i);
+		const off = { ...context.config, verifiers: { testQuality: "off" as const } };
+		expect(testQualityVerifier.enabledFor?.(off)).toBe(false);
+		expect(testQualityVerifier.enabledFor?.(context.config)).toBe(true);
 	});
 
 	it("in warn mode, a low-coverage change still passes but the reason states the shortfall instead of going silent", async () => {

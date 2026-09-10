@@ -97,11 +97,15 @@ program
 		process.stdout.write(renderTimeline(events, gapCount, formatOf()));
 	});
 
-program.command("verify <id>").description("run or rerun verification").action(async (id: string) => {
-	const root = await repoRoot();
-	const verdict = await verifyRun(root, parseRunId(id));
-	process.stdout.write(`${renderVerdict(verdict, formatOf())}\n`);
-});
+program
+	.command("verify <id>")
+	.description("run or rerun verification")
+	.option("--resume", "re-enter verification for a run a crash left mid-verification; records a gap, so the run can never be VERIFIED")
+	.action(async (id: string, options: { resume?: boolean }) => {
+		const root = await repoRoot();
+		const verdict = await verifyRun(root, parseRunId(id), { resume: options.resume === true });
+		process.stdout.write(`${renderVerdict(verdict, formatOf())}\n`);
+	});
 
 program.command("risk <id>").description("show the itemised risk assessment").action(async (id: string) => {
 	const root = await repoRoot();

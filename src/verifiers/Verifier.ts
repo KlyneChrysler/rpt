@@ -18,14 +18,30 @@ export type RunContext = {
 export interface Verifier {
 	readonly id: string;
 	run(context: RunContext): Promise<VerifierResult>;
+	// Whether this verifier is enabled at all for the given config. A verifier
+	// with no opinion is always enabled, which is every verifier but one.
+	enabledFor?(config: RptConfig): boolean;
 }
 
+// A verifier a project has turned off is not run and contributes no result,
+// rather than contributing a skip. That distinction is the whole point: under
+// this project's rule that missing evidence is never a pass, a skip downgrades
+// a run to UNVERIFIED forever, so a config option named "off" that emitted one
+// meant every run in that repository was permanently unverifiable and every
+// commit permanently gated - the opposite of what turning a check off asks for.
+// Nothing is hidden by the omission: the verdict lists the checks that ran, and
+// the config snapshot it was judged under is fingerprinted and drift-checked,
+// so "test-quality is absent because the config disabled it" stays legible and
+// stays tamper-evident.
 export async function runVerifiers(
 	verifiers: readonly Verifier[],
 	context: RunContext,
 ): Promise<VerifierResult[]> {
 	const results: VerifierResult[] = [];
-	for (const verifier of verifiers) results.push(await runOne(verifier, context));
+	for (const verifier of verifiers) {
+		if (verifier.enabledFor?.(context.config) === false) continue;
+		results.push(await runOne(verifier, context));
+	}
 	return results;
 }
 

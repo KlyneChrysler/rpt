@@ -21,6 +21,15 @@ function handle(rptDir: string, socket: Socket): void {
 		buffer += chunk;
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
+		// A frame split across more than one chunk leaves no complete line yet.
+		// Answering that with "ok" - which is what replying for an empty batch
+		// amounted to - told the client an event was persisted when nothing had
+		// been written at all, and the client, believing it, skipped both the
+		// direct-append fallback and the gap behind it. Staying silent instead
+		// leaves the client waiting: it gets a real answer when the rest of the
+		// frame arrives, or its own send timeout fires and it falls back. Both
+		// of those are honest; the acknowledgement was not.
+		if (lines.length === 0) return;
 		void persistAll(rptDir, lines, socket);
 	});
 	socket.on("error", () => socket.destroy());

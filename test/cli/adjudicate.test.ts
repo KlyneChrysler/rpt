@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildCli, cliPath, projectRoot } from "../support/platform.js";
@@ -118,6 +118,18 @@ describe("rpt gate", () => {
 	it("exits zero under an explicit bypass", async () => {
 		const repo = await repoWithEndedRun();
 		expect((await runCli(["gate"], repo, { RPT_BYPASS: "1" })).exitCode).toBe(0);
+	});
+});
+
+describe("rpt --version", () => {
+	// Read from package.json at runtime rather than duplicated as a literal, so
+	// this also proves the packaged binary can still reach it from dist/cli.
+	it("reports the package version", async () => {
+		const repo = await repoWithEndedRun();
+		const result = await runCli(["--version"], repo);
+		const pkg = JSON.parse(await readFile(join(projectRoot, "package.json"), "utf8")) as { version: string };
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout.trim()).toBe(pkg.version);
 	});
 });
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
 import { Command } from "commander";
 import type { AgentRun } from "../domain/run.js";
 import type { RunId } from "../domain/events.js";
@@ -23,7 +24,11 @@ import { renderActiveRun, renderRun, renderRunList, renderTimeline, type Pending
 import { renderRisk, renderVerdict } from "./renderRisk.js";
 
 const program = new Command();
-program.name("rpt").description("AI agent flight recorder and verification engine");
+// Read from the package rather than duplicated as a literal, so a release can
+// never ship a binary that reports a version it is not.
+const { version } = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { version: string };
+
+program.name("rpt").description("AI agent flight recorder and verification engine").version(version);
 program.option("--format <format>", "text, json or agent", "text");
 
 // The default command. On a terminal this is the console; piped, it is the

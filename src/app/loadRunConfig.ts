@@ -25,11 +25,27 @@ export type ResolvedRunConfig = { config: RptConfig; configChangedSinceSnapshot:
 // disk means the snapshot cannot be trusted, and configChangedSinceSnapshot
 // is forced true rather than silently unset.
 //
+// The alarm alone was not enough: welding the drift finding on while still
+// falling back to a live read on that same path left the protection off -
+// whoever deleted or altered the snapshot still got to choose the live
+// rpt.config.json their own run is scored against, and the typed
+// confirmation would then read the human a level derived from the
+// attacker's own file. On this path the config used is DEFAULT_CONFIG -
+// rpt's own shipped defaults, never the repository's file - so tampering
+// with the snapshot cannot also choose what the run is judged against; it
+// can only ever make the judgement stricter than a project's own configured
+// thresholds, and the drift finding still fires so the substitution is
+// visible. Restoring the real snapshot (or a fresh run, which snapshots
+// again) recovers the real config immediately - this is a degradation, not
+// a refusal, exactly because DEFAULT_CONFIG is always available with no I/O
+// that could itself fail.
+//
 // Never throws: a snapshot that is missing, unreadable, or fails its own
-// schema is handled the same way as one that fails its fingerprint check -
-// forced drift, not a permanent refusal with no repair path. The config
-// actually used to keep verification and approval running falls back to a
-// live read, and finally to DEFAULT_CONFIG if even that fails.
+// schema is handled the same way as one that fails its fingerprint check.
+// A run that genuinely predates the feature (configFingerprint === null)
+// is a different case with nothing to verify - that one still falls back to
+// a live read, since there is no tampering to defend against and no
+// snapshot the run was ever judged by.
 export async function resolveRunConfig(repoRoot: string, run: AgentRun): Promise<ResolvedRunConfig> {
 	const snapshot = await readSnapshotOrNull(rptDirOf(repoRoot), run.id);
 
@@ -38,7 +54,7 @@ export async function resolveRunConfig(repoRoot: string, run: AgentRun): Promise
 	}
 
 	if (snapshot === null || fingerprintOf(snapshot) !== run.configFingerprint) {
-		return { config: await loadConfigOrDefault(repoRoot), configChangedSinceSnapshot: true };
+		return { config: DEFAULT_CONFIG, configChangedSinceSnapshot: true };
 	}
 
 	const live = await loadConfigSafely(repoRoot);

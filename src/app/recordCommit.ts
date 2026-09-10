@@ -1,6 +1,6 @@
 import type { Approval } from "../domain/approval.js";
 import { fingerprintOf } from "../domain/checksum.js";
-import type { RunId } from "../domain/events.js";
+import type { AgentEvent, RunId } from "../domain/events.js";
 import type { AgentRun } from "../domain/run.js";
 import type { Verdict } from "../domain/verdict.js";
 import { git } from "../git/exec.js";
@@ -57,12 +57,13 @@ export async function attestationFor(repoRoot: string, run: AgentRun, verdict: V
 	const { assessment, facts } = await assessRun(repoRoot, run, verdict);
 	const cost = runCost(run.usage, await loadPricing(rptDirOf(repoRoot)));
 	const tests = verdict.results.find((result) => result.id === "tests")?.facts ?? {};
+	const { events } = await readEvents(rptDirOf(repoRoot), run.id);
 	return [
 		`run ${run.id} | ${run.task}`,
 		verdictLine(verdict, assessment),
 		`tests ${countText(tests.passed)} passed ${countText(tests.failed)} failed | files ${facts.fileCount} | ${costLine(cost.usd)}`,
-		approvalLine(await readApproval(repoRoot, run.id), verdict),
-		`digest ${await digestOf(repoRoot, run.id)}`,
+		approvalLine(await readApproval(repoRoot, run.id), verdict, bypassedAt(events)),
+		`digest ${digestOf(events)}`,
 		"",
 	].join("\n");
 }
@@ -82,20 +83,35 @@ function costLine(usd: number | null): string {
 	return usd === null ? "cost unknown" : `cost ${usd.toFixed(2)} USD`;
 }
 
-// Three outcomes that must stay distinguishable in the record: a run that
-// needed no human at all, a run a human cleared after rpt verified it, and a
-// run a human signed off on despite rpt being unable to verify it.
-function approvalLine(approval: Approval | null, verdict: Verdict): string {
-	if (approval === null) return "cleared automatically";
-	if (approval.decision === "rejected") return `rejected by ${approval.by} at ${approval.at}`;
-	const verb = approval.override ? `approved despite ${verdict.name}` : "approved";
-	return `${verb} by ${approval.by} at ${approval.at}`;
+// Four outcomes that must stay distinguishable in the record: a run that needed
+// no human at all, a run a human cleared after rpt verified it, a run a human
+// signed off on despite rpt being unable to verify it, and a run that was
+// committed past a gate that asked for a human and never got one. That last one
+// read as "cleared automatically" until a manual drive of the built binary
+// showed it - the single most misleading line the note could carry, since it
+// says the opposite of what happened.
+function approvalLine(approval: Approval | null, verdict: Verdict, bypassedAtIso: string | null): string {
+	if (approval === null) {
+		return bypassedAtIso === null ? "cleared automatically" : `BYPASSED at ${bypassedAtIso} - committed without the approval the gate required`;
+	}
+	const decided = approval.decision === "rejected"
+		? `rejected by ${approval.by} at ${approval.at}`
+		: `${approval.override ? `approved despite ${verdict.name}` : "approved"} by ${approval.by} at ${approval.at}`;
+	return bypassedAtIso === null ? decided : `${decided}, then BYPASSED at ${bypassedAtIso}`;
+}
+
+// The gate records every outcome as ApprovalRequested and marks the payload
+// when a bypass is what allowed the commit (see src/app/gateCommit.ts). The
+// newest such event wins: a run gated more than once was bypassed at the point
+// the commit actually went through.
+function bypassedAt(events: readonly AgentEvent[]): string | null {
+	const bypasses = events.filter((event) => event.kind === "ApprovalRequested" && event.payload.bypass === true);
+	return bypasses[bypasses.length - 1]?.ts ?? null;
 }
 
 // Over the events as read back, which is the same view any later check has:
 // readEvents strips each line's checksum, so the digest is reproducible from
 // the log rather than from a private in-memory shape.
-async function digestOf(repoRoot: string, runId: RunId): Promise<string> {
-	const { events } = await readEvents(rptDirOf(repoRoot), runId);
+function digestOf(events: readonly AgentEvent[]): string {
 	return `sha256:${fingerprintOf(events).slice(0, 16)}`;
 }

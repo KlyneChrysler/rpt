@@ -4,6 +4,7 @@ import type { AgentRun } from "../domain/run.js";
 import type { RunId } from "../domain/events.js";
 import { actorFromEnvironment, approveRun, rejectRun } from "../app/approveRun.js";
 import { assessRun } from "../app/assessRun.js";
+import { doctor, type Check } from "../app/doctor.js";
 import { gateCommit } from "../app/gateCommit.js";
 import { loadRun } from "../app/loadRun.js";
 import { initRepo } from "../app/initRepo.js";
@@ -22,6 +23,20 @@ import { renderRisk, renderVerdict } from "./renderRisk.js";
 const program = new Command();
 program.name("rpt").description("AI agent flight recorder and verification engine");
 program.option("--format <format>", "text, json or agent", "text");
+
+// The default command. On a terminal this is the console; piped, it is the
+// same run list `rpt runs` prints. A piped rpt must never emit escape
+// sequences - a shell pipeline is not a screen, and the moment it receives
+// cursor movement the output stops being usable as data.
+program.action(async () => {
+	const root = await repoRoot();
+	if (process.stdout.isTTY !== true) {
+		await printRunList(root);
+		return;
+	}
+	const { renderConsole } = await import("../ui/renderConsole.js");
+	await renderConsole(root);
+});
 
 program.command("init").description("install hooks and scaffolds").action(async () => {
 	const report = await initRepo(process.cwd());
@@ -48,13 +63,17 @@ program.command("status").description("show the run in progress, if any").action
 });
 
 program.command("runs").description("list runs").action(async () => {
-	const rptDir = rptDirOf(await repoRoot());
+	await printRunList(await repoRoot());
+});
+
+async function printRunList(root: string): Promise<void> {
+	const rptDir = rptDirOf(root);
 	const { entries, corruptLines } = await readIndex(rptDir);
 	const startFailures = await readStartFailures(rptDir);
 	process.stdout.write(
 		`${renderRunList({ entries: latestEntries(entries), corruptLines, startFailures }, formatOf())}\n`,
 	);
-});
+}
 
 program.command("run <id>").description("show one run").action(async (id: string) => {
 	const run = await loadRunOrThrow(await repoRoot(), parseRunId(id));
@@ -151,6 +170,19 @@ async function decide(runId: RunId, decision: "approved" | "rejected"): Promise<
 
 function messageOf(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+// Exits non-zero when any check failed, so it can stand as a CI step rather
+// than only as something a person reads.
+program.command("doctor").description("diagnose hooks, config, pricing, worktrees and the daemon").action(async () => {
+	const checks = await doctor(await repoRoot());
+	process.stdout.write(`${renderChecks(checks, formatOf())}\n`);
+	if (checks.some((entry) => !entry.ok)) process.exitCode = 1;
+});
+
+function renderChecks(checks: readonly Check[], format: OutputFormat): string {
+	if (format === "json") return JSON.stringify({ checks }, null, 2);
+	return checks.map((entry) => `${entry.ok ? "ok" : "!!"}  ${entry.id.padEnd(14)}${entry.detail}`).join("\n");
 }
 
 // Read commands answer for a repository, not for a directory, and a repository

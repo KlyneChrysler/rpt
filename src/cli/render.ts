@@ -127,11 +127,21 @@ function textLines(run: AgentRun): string[] {
 	];
 }
 
+// The agent format is injected into a context window on every invocation, so
+// its length is a fixed cost paid on every call, not a cosmetic property. A
+// task is a free-text prompt line and can be arbitrarily long; the counts and
+// the gap warning never are, and are never truncated.
+const AGENT_TASK_MAX = 80;
+
 function agentLines(run: AgentRun): string[] {
 	return [
-		`RUN ${run.id} ${run.state} | ${run.task}`,
+		`RUN ${run.id} ${run.state} | ${truncate(run.task, AGENT_TASK_MAX)}`,
 		`files ${run.claims.mutatedPaths.length} | cmds ${run.claims.commands.length} | ${formatDuration(run.startedAt, run.endedAt)}${run.hasGaps ? " | GAPS: not verifiable" : ""}`,
 	];
+}
+
+function truncate(value: string, limit: number): string {
+	return value.length <= limit ? value : `${value.slice(0, limit)}...`;
 }
 
 function timelineLine(start: string, event: AgentEvent): string {

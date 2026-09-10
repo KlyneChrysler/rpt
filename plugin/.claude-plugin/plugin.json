@@ -1,0 +1,17 @@
+{
+  "name": "rpt",
+  "version": "0.1.0",
+  "description": "Read-only access to rpt, the AI agent flight recorder and verification engine, from inside a Claude Code session",
+  "author": {
+    "name": "Klyne Chrysler C. Dotarot",
+    "email": "klyne@inventivlabs.io"
+  },
+  "license": "MIT",
+  "keywords": [
+    "verification",
+    "audit",
+    "risk",
+    "observability",
+    "accountability"
+  ]
+}

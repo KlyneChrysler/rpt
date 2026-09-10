@@ -123,6 +123,21 @@ describe("rpt gate", () => {
 	});
 });
 
+describe("rpt with no subcommand", () => {
+	it("prints the run list as plain text when its output is piped", async () => {
+		const repo = await repoWithEndedRun();
+		const result = await runCli([], repo);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("1");
+	});
+
+	it("emits no terminal escape sequences when piped", async () => {
+		const repo = await repoWithEndedRun();
+		const result = await runCli([], repo);
+		expect(result.stdout).not.toContain(String.fromCharCode(27));
+	});
+});
+
 describe("rpt record", () => {
 	it("exits zero and prints nothing when asked to be quiet", async () => {
 		const repo = await repoWithEndedRun();

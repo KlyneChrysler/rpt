@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../src/app/terminalConfirm.js", () => ({ readFromControllingTerminal: vi.fn() }));
 
 import { approveRun, rejectRun, type Actor } from "../../src/app/approveRun.js";
+import { gateCommit } from "../../src/app/gateCommit.js";
 import { initRepo } from "../../src/app/initRepo.js";
 import { recordCommit } from "../../src/app/recordCommit.js";
 import { readFromControllingTerminal } from "../../src/app/terminalConfirm.js";
@@ -79,6 +80,21 @@ describe("recordCommit", () => {
 		const body = await note(repo);
 		expect(body).toMatch(/rejected by klyne/);
 		expect(body).not.toMatch(/approved/);
+	});
+
+	it("names a bypass in the note rather than calling the commit clean", async () => {
+		const repo = await endedRun();
+		process.env.RPT_BYPASS = "1";
+		try {
+			await gateCommit(repo);
+		} finally {
+			delete process.env.RPT_BYPASS;
+		}
+		await commit(repo);
+		await recordCommit(repo);
+		const body = await note(repo);
+		expect(body).toContain("BYPASSED");
+		expect(body).not.toContain("cleared automatically");
 	});
 
 	it("says a run nobody had to decide was cleared automatically", async () => {

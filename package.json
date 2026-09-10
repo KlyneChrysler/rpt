@@ -1,18 +1,51 @@
 {
 	"name": "@klyne/rpt",
 	"version": "0.1.0",
+	"description": "AI agent flight recorder and verification engine: observes an agent run, re-derives the facts, scores risk, and gates the commit.",
 	"type": "module",
 	"bin": {
 		"rpt": "./dist/cli/index.js"
 	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"plugin",
+		"docs/limits.md",
+		"README.md"
+	],
 	"engines": {
 		"node": ">=22"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/KlyneChrysler/rpt.git"
+	},
+	"homepage": "https://github.com/KlyneChrysler/rpt#readme",
+	"keywords": [
+		"ai",
+		"agent",
+		"verification",
+		"audit",
+		"risk",
+		"git-hooks",
+		"claude-code",
+		"observability"
+	],
+	"publishConfig": {
+		"access": "public"
 	},
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"test": "vitest run",
 		"test:cov": "vitest run --coverage",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
 	},
 	"dependencies": {
 		"commander": "^12.1.0",

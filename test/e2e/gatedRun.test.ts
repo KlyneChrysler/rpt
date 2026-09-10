@@ -74,13 +74,15 @@ describe("gated run, end to end", () => {
 		expect((await gateCommit(repo)).allowed).toBe(false);
 	});
 
-	it("records a bypassed commit as bypassed rather than as clean", async () => {
+	it("records a bypassed commit as bypassed, never as cleared automatically", async () => {
 		const repo = await riskyRun();
 		process.env.RPT_BYPASS = "1";
 		expect((await gateCommit(repo)).allowed).toBe(true);
 		await commit(repo);
 		await recordCommit(repo);
-		expect(await git(repo, ["notes", "--ref=rpt", "show", "HEAD"])).toContain("cleared automatically");
+		const note = await git(repo, ["notes", "--ref=rpt", "show", "HEAD"]);
+		expect(note).toContain("BYPASSED");
+		expect(note).not.toContain("cleared automatically");
 	});
 
 	it("leaves the user's index and working tree untouched throughout", async () => {

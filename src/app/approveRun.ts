@@ -261,9 +261,18 @@ export async function healApproval(repoRoot: string, runId: RunId, actor: Actor,
 	// resolving this run's config produces right now - not merely "any
 	// string that looks like a fingerprint". A forged event can no longer
 	// invent a fingerprint that was never real.
+	// Every config this run could legitimately have been assessed under: its own
+	// recorded fingerprint, and both candidates a resolve produces now - the
+	// second of which exists only on the degraded path, where assessRun judges
+	// under both and records whichever was stricter (see src/app/assessRun.ts).
+	// Omitting it would refuse to heal a genuine record written on that path.
 	const currentResolve = await resolveRunConfig(repoRoot, run);
 	const acceptableFingerprints = new Set(
-		[run.configFingerprint, fingerprintOf(currentResolve.config)].filter((value): value is string => value !== null),
+		[
+			run.configFingerprint,
+			fingerprintOf(currentResolve.config),
+			currentResolve.alsoAssessUnder === null ? null : fingerprintOf(currentResolve.alsoAssessUnder),
+		].filter((value): value is string => value !== null),
 	);
 	if (!acceptableFingerprints.has(approval.configFingerprint)) {
 		throw new Error(

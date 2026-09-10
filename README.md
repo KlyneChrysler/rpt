@@ -11,21 +11,18 @@ log says so instead of silently closing the gap. If the agent writes a file and 
 mentions it, rpt still sees it, because the observation comes from asking git what
 changed between two snapshots, not from trusting the agent's own claims.
 
-rpt also verifies, scores risk, and requires a gated, explicit human decision
-before a run counts as approved - not yet a commit gate itself (nothing in this
-codebase hooks `git commit`; see "Commands" below for what actually ships as a
-CLI command today), but the engine that decision would sit behind. A run's
-`state` field is not scaffolding: it can reach `VERIFYING`, `VERIFIED`, `FAILED`,
-`UNVERIFIED`, `AWAITING_APPROVAL`, `APPROVED` and `REJECTED`, driven there by
-`verifyRun` and `approveRun`/`rejectRun` (`src/app/`). Verification runs this
-project's own test command inside a git worktree isolated from your working tree;
-risk is assessed against `rpt.config.json`, read once as a snapshot taken at each
-run's own start rather than live (see "Threat model" below for exactly what that
-does and does not protect against); and a CRITICAL-risk run has no approval path
-at all. None of `verifyRun`/`approveRun`/`rejectRun` is wired into a CLI command
-yet - `rpt` today only records, lists and replays runs (see "Commands") - but the
-engine underneath is real, not a placeholder, and `rpt.config.json` is a live
-input to it from the moment `rpt init` scaffolds one.
+rpt also verifies, scores risk, gates the commit, and records the outcome as a git
+note. `rpt init` installs a `pre-commit` hook that runs `rpt gate` and a
+`post-commit` hook that runs `rpt record`, both chained onto whatever hooks were
+already there. Verification runs this project's own test command inside a git
+worktree isolated from your working tree; risk is assessed against
+`rpt.config.json`, read once as a snapshot taken at each run's own start rather
+than live (see "Threat model" below for exactly what that does and does not
+protect against); approval requires a human at a terminal typing a phrase bound to
+that specific run, verdict and risk level; and a CRITICAL-risk run has no approval
+path at all.
+
+Read `docs/limits.md` before you treat a green verdict as more than it is.
 
 ## Install
 
@@ -38,7 +35,10 @@ pnpm build
 
 `rpt` is a single binary (`dist/cli/index.js`, published as `bin: rpt`). Link it onto
 your `PATH` however you normally do that for a local package (`pnpm link --global`,
-or point a shell alias at `dist/cli/index.js`).
+or point a shell alias at `dist/cli/index.js`). The git hooks `rpt init` installs
+call `rpt` by name, so it has to be on `PATH` for the gate to run at all - `rpt
+doctor` reports the hooks as installed either way, since it reads the hook file
+rather than resolving the binary.
 
 ## `rpt init`
 
@@ -54,7 +54,9 @@ rpt init
 This installs `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and
 `Stop` hooks into `.claude/settings.json` (merged in, never overwritten - if that
 file exists and isn't valid JSON, `rpt init` refuses to touch it rather than guess),
-adds `.rpt/` to `.gitignore`, and scaffolds two files if they don't already exist:
+installs `pre-commit` and `post-commit` hooks into `.git/hooks` (appended to any
+hook already there, never replacing it), adds `.rpt/` to `.gitignore`, and scaffolds
+two files if they don't already exist:
 
 - `rpt.config.json` - test/coverage commands, sensitive-path globs and risk
   thresholds. This is a live input, not scaffolding: `verifyRun` reads it (via a
@@ -95,8 +97,9 @@ session transcript - is folded into that run:
 - **Usage**: per-model token counts (input, output, cache read, cache create) read
   from the Claude Code transcript. A cost-accounting function exists
   (`src/pricing/cost.ts`) that prices usage against `.rpt/pricing.json` and reports
-  no cost, not a guessed one, for any model without a rate on file - but no CLI
-  command surfaces a dollar figure yet.
+  no cost, not a guessed one, for any model without a rate on file. A run rpt
+  recorded no usage for at all reports its cost as unknown rather than as zero, in
+  the console and in the attestation both.
 - **Gaps**: if an event is lost - a torn write from a crash, a delivery that
   couldn't reach the daemon and couldn't be appended directly either - the run is
   marked `hasGaps: true` rather than silently missing the event. A gapped run can
@@ -139,19 +142,121 @@ denser form meant to be read back into an agent's own context).
 
 | Command | What it does |
 |---|---|
-| `rpt init` | Installs hooks and scaffolds config/pricing files. |
+| `rpt` | Opens the console on a terminal. Piped, prints the same list `rpt runs` prints, with no escape sequences. |
+| `rpt init` | Installs agent hooks, git hooks, and scaffolds config/pricing files. |
 | `rpt status` | Shows the newest run rpt is not done with: the one in progress, or one that has ended but has not been recorded yet. |
 | `rpt runs` | Lists every run recorded in this repository, warning first about corrupt index lines and about sessions that failed to start. |
 | `rpt run <id>` | Shows one run: task, state, claims, and model usage counts. |
 | `rpt events <id>` (alias `rpt replay`) | Prints the full event timeline for a run, warning first if that log has unreadable lines. |
+| `rpt verify <id>` | Runs every enabled verifier against the run's end snapshot in an isolated worktree and prints the verdict. |
+| `rpt risk <id>` | Prints the itemised risk assessment. Refuses, naming `rpt verify`, when the run has no verdict yet. |
+| `rpt diff <id>` | Prints the diff rpt observed between the run's base and end snapshots. |
+| `rpt approve <id>` | Records a human approval. Requires a terminal, refuses inside a known agent context, and asks for a typed confirmation. |
+| `rpt reject <id>` | Records a human rejection, under the same conditions. |
+| `rpt gate` | The pre-commit gate. Exit zero allows the commit; exit one blocks it and explains why on stderr. |
+| `rpt record` | Attaches the attestation note to the commit that just landed. Always exits zero. |
+| `rpt doctor` | Checks agent hooks, git hooks, config validity, pricing coverage, orphaned worktrees and the daemon. Exits one if any check failed. |
 
 Every command works from anywhere inside the repository, not just its root: rpt walks
 up to the git root (or the nearest `.rpt/`) to find it. If there is no repository above
 the working directory at all, that is what it says - it does not answer with an empty
 history and a zero exit, which is what a genuinely empty repository looks like.
 
-There is no write or mutating command beyond `rpt init` and the internal `rpt hook`
-entry point Claude Code itself calls - every other command is read-only.
+The only commands that change anything are `rpt init`, `rpt verify`, `rpt approve`,
+`rpt reject`, `rpt record`, and the internal `rpt hook` entry point Claude Code
+itself calls. Everything else reads.
+
+## The commit gate
+
+`rpt gate` runs from `pre-commit` and answers one question: does this commit need a
+human first?
+
+It finds the newest run that has ended and has not yet been recorded, verifies it if
+it has no verdict yet, scores it, and then:
+
+- A VERIFIED run at LOW or MEDIUM risk passes. rpt stays out of the way.
+- A VERIFIED run at HIGH risk needs an approval on file.
+- A FAILED or UNVERIFIED run always needs an approval on file, whatever its score,
+  because committing unproven work is itself the thing a human has to accept.
+- A CRITICAL run is blocked outright. There is no approval path and no bypass.
+- A run a human rejected keeps blocking.
+
+When it blocks, it says so on stderr and names the command that unblocks it:
+
+```
+rpt: commit blocked
+
+  run 1  fix authentication timeout
+  risk 67 HIGH
+  verdict VERIFIED
+
+  approve with:  rpt approve 1
+```
+
+**Bypass.** `RPT_BYPASS=1 git commit ...` proceeds past everything except CRITICAL.
+It does not silence rpt: the gate records the score at the time and the fact that a
+bypass is what allowed the commit, and the attestation note on that commit says
+`BYPASSED` in the line where an approval would otherwise go. A commit allowed
+because a human approved it is never recorded as a bypass, even if the variable
+happens to be set.
+
+**Approval is human-only.** `rpt approve` and `rpt reject` refuse when the process
+is running inside a known agent context, refuse without an interactive terminal, and
+then - unconditionally, for every caller that gets that far - read a confirmation
+phrase from the controlling terminal, `/dev/tty`, not from standard input. The
+phrase names the run, the decision, the verdict and the risk level, so a "yes"
+captured once cannot be replayed against a different decision. Neither verb is
+reachable from the slash command plugin.
+
+## The attestation
+
+`rpt record` runs from `post-commit` and attaches a compact summary to the commit
+under `refs/notes/rpt`:
+
+```
+run 1 | fix authentication timeout
+verdict VERIFIED | risk 67 HIGH
+tests 184 passed 0 failed | files 7 | cost 1.84 USD
+approved despite UNVERIFIED by klyne at 2026-09-09T14:22:31Z
+digest sha256:8c1f0a2b3c4d5e6f
+```
+
+The fourth line distinguishes four outcomes that must never blur together: a run
+nobody had to decide reads `cleared automatically`, a verified run a human cleared
+reads `approved by`, a run signed off on despite rpt being unable to verify it
+reads `approved despite UNVERIFIED by`, and a run committed past a gate that asked
+for a human and never got one reads `BYPASSED at ... - committed without the
+approval the gate required`. File counts come from the observed diff, not from the
+agent's claims. A count rpt could not parse reads `unknown`, never zero.
+
+The digest covers the run's whole event log as read back, so a note can be checked
+against the local log. The log stays in `.rpt/` and is gitignored; the note travels
+with the repository and is reviewable in a pull request.
+
+## The console
+
+Running `rpt` on a terminal opens an Ink console: a dashboard of runs, then run
+detail, events, diff, risk and approval screens.
+
+```
+[up/down] select  [enter] open  [q] quit
+[v] events  [d] diff  [r] risk  [a] approve  [esc] back  [q] quit
+```
+
+The console is a presentation shell over `src/app/readModel.ts`, which returns plain
+serialisable data. No component reads a file, invokes git, or knows how a run is
+stored, and a test enforces that, so replacing this surface touches `src/ui/` and
+nothing else. Its approval screen goes through the same `approveRun` path the CLI
+does, including the same terminal confirmation - it offers no way around it.
+
+## Slash commands for Claude Code
+
+`plugin/` is an installable Claude Code plugin exposing four read-only verbs:
+`/rpt:status`, `/rpt:verify`, `/rpt:risk` and `/rpt:diff`. Each shells to the binary
+with `--format=agent` and reports the output verbatim.
+
+There is no `/rpt:approve` and no `/rpt:reject`. An agent that could clear its own
+run would make this whole layer decorative.
 
 ## Where data lives
 
@@ -329,12 +434,43 @@ that run is scored against in any of the three cases the fingerprint check
 exists to catch (missing, corrupt, or mismatched), and the drift finding still
 fires so the substitution is visible rather than silent. Restoring the real
 snapshot (or a fresh run, which snapshots again) recovers the real config
-immediately: this is a degradation, not a refusal, on purpose. What this does
-not close: the snapshot for a run is only as trustworthy as whatever
-`rpt.config.json` already said the moment that run started, which a
+immediately: this is a degradation, not a refusal, on purpose.
+
+Substituting the defaults alone was itself half a fix, and it shipped that way
+too. "Never the repository's file" is directionally right and absolutely wrong,
+because a project's own config may be *stricter* than rpt's defaults: for any
+repository that sets a block threshold below fifty-one, deleting one file inside
+`.rpt/` moved a run from CRITICAL to approvable, and the typed confirmation then
+read the human the downgraded level, so they approved honestly on a false
+premise. The rule is not "never the repository's file", it is "never the laxer
+of the two". On the degraded path a run is now assessed under *both* the
+defaults and the live config, and judged by whichever result is stricter
+(`src/app/assessRun.ts`). The defaults remove the attacker-relaxed direction;
+the live config removes the project-relaxed direction; an attacker who edits the
+live config to be stricter only ever blocks an approval. The cost, when this is
+wrong, is a run judged more strictly than either config alone would judge it, on
+a path that already forces a visible drift finding.
+
+What this does not close: the snapshot for a run is only as trustworthy as
+whatever `rpt.config.json` already said the moment that run started, which a
 *previous*, already-approved run could have poisoned. Closing that would
 require the config itself to be an append-only, independently-reviewed record,
 which it is not.
+
+### What the commit gate is and is not
+
+The gate is a `pre-commit` hook. It stops a commit the way any pre-commit hook
+stops a commit, which is to say: completely, until someone chooses otherwise.
+`RPT_BYPASS=1`, `git commit --no-verify`, deleting `.git/hooks/pre-commit`, or
+calling `git commit-tree` directly all get past it, and the first of those is a
+documented, supported escape hatch. What the gate buys is not prevention but
+cost and visibility: a bypass is recorded with the score at the time, and a
+commit that landed without a gate result has no attestation note, which is
+itself visible in review.
+
+CRITICAL is the one thing the bypass does not cover. That is a property of the
+gate's own ordering, not of git: someone who removes the hook is not gated at
+all, by rpt or anything else.
 
 ### Why none of this defends against a hostile agent
 
@@ -377,3 +513,12 @@ agent cannot produce). rpt's job ends at making the agent's own claims checkable
 and making the one place a human decision is recorded resistant to accidental
 self-clearing - not at defending that record against an agent that has decided
 to attack it.
+
+## What rpt does not establish
+
+`docs/limits.md` states, without hedging, what a green verdict does and does not
+prove: that rpt runs the tests a repository already has and cannot tell you those
+tests are good, that change coverage measures execution rather than assertion,
+that risk scores are a configured heuristic rather than a measurement, and that a
+bypassed commit is recorded but not prevented. Read it before treating a verdict
+as an assurance.

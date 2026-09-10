@@ -5,7 +5,16 @@ import type { AgentRun } from "../domain/run.js";
 import { readRunConfig } from "../store/runConfig.js";
 import { rptDirOf } from "../store/paths.js";
 
-export type ResolvedRunConfig = { config: RptConfig; configChangedSinceSnapshot: boolean };
+export type ResolvedRunConfig = {
+	config: RptConfig;
+	// The repository's live config, on the degraded path only, when it could be
+	// read at all. A run whose snapshot failed verification must be assessed
+	// under both this and `config` above, and judged by whichever result is
+	// stricter - see src/app/assessRun.ts. Null whenever there is nothing to
+	// compare against, which is every non-degraded path.
+	alsoAssessUnder: RptConfig | null;
+	configChangedSinceSnapshot: boolean;
+};
 
 // The config both verification and approval must assess a run against: the
 // snapshot taken at that run's start, not a live read of rpt.config.json -
@@ -40,6 +49,23 @@ export type ResolvedRunConfig = { config: RptConfig; configChangedSinceSnapshot:
 // a refusal, exactly because DEFAULT_CONFIG is always available with no I/O
 // that could itself fail.
 //
+// "Never the repository's file" was directionally right and absolutely wrong,
+// and this is the correction. A project's own config may be STRICTER than
+// rpt's defaults: for any repository that sets a block threshold below
+// fifty-one, substituting DEFAULT_CONFIG on the degraded path moves a run from
+// critical to approvable, and the typed confirmation then reads the human the
+// downgraded level, so they approve honestly on a false premise. Deleting one
+// file inside .rpt was enough to do it.
+//
+// The rule is not "never the repository's file", it is "never the laxer of the
+// two". Both configs come back from this function on that path, and
+// src/app/assessRun.ts assesses under each and takes the stricter result. The
+// defaults remove the attacker-relaxed direction, the live config removes the
+// project-relaxed direction, and an attacker who edits the live config to be
+// stricter only ever blocks an approval. The cost, when this is wrong, is that
+// a run is judged more strictly than either config alone would judge it - on a
+// path that already forces a visible drift finding.
+//
 // Never throws: a snapshot that is missing, unreadable, or fails its own
 // schema is handled the same way as one that fails its fingerprint check.
 // A run that genuinely predates the feature (configFingerprint === null)
@@ -50,16 +76,16 @@ export async function resolveRunConfig(repoRoot: string, run: AgentRun): Promise
 	const snapshot = await readSnapshotOrNull(rptDirOf(repoRoot), run.id);
 
 	if (run.configFingerprint === null) {
-		return { config: await loadConfigOrDefault(repoRoot), configChangedSinceSnapshot: false };
+		return { config: await loadConfigOrDefault(repoRoot), alsoAssessUnder: null, configChangedSinceSnapshot: false };
 	}
 
 	if (snapshot === null || fingerprintOf(snapshot) !== run.configFingerprint) {
-		return { config: DEFAULT_CONFIG, configChangedSinceSnapshot: true };
+		return { config: DEFAULT_CONFIG, alsoAssessUnder: await loadConfigSafely(repoRoot), configChangedSinceSnapshot: true };
 	}
 
 	const live = await loadConfigSafely(repoRoot);
 	const configChangedSinceSnapshot = live === null || JSON.stringify(live) !== JSON.stringify(snapshot);
-	return { config: snapshot, configChangedSinceSnapshot };
+	return { config: snapshot, alsoAssessUnder: null, configChangedSinceSnapshot };
 }
 
 async function readSnapshotOrNull(rptDir: string, runId: number): Promise<RptConfig | null> {

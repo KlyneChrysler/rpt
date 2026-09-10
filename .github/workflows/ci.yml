@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # git identity is required: the verifier and attestation suites create
+      # fixture repositories and commit into them.
+      - name: configure git identity for fixture repositories
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "rpt ci"
+
+      - run: pnpm typecheck
+
+      # Coverage thresholds are configured in vitest.config.ts; the job fails
+      # when any of the four drops below 80.
+      - run: pnpm test:cov
+
+      - run: pnpm build

@@ -1,8 +1,11 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+	// The Ink surface is written in TSX and its tests render real components,
+	// so both the source transform and the test glob have to know about JSX.
+	esbuild: { jsx: "automatic" },
 	test: {
-		include: ["test/**/*.test.ts"],
+		include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
 		coverage: {
 			provider: "v8",
 			// v8's default reporter set ("text", "html", "clover", "json") never

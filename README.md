@@ -277,15 +277,26 @@ silent one - visible, not prevented.
 
 A run whose approval event exists but whose file does not (an interrupted write)
 is recovered by `healApproval`, a separate, explicitly-named operation - never
-called automatically by `approveRun`/`rejectRun` - with its own, narrower gate:
-it refuses an event claiming CRITICAL risk the same way a fresh decision would,
-and refuses one naming a different verdict than what is actually on disk. Its
-own limit: it checks the level *recorded in the event*, not a fresh assessment
-(re-judging an approval against today's score is a separate rule this project
-does not break), so a forged event that understates its own risk - claims LOW
-when the change was actually CRITICAL - is not caught by this check. Nothing
-about `healApproval` is meant to be stronger than what a fresh decision already
-grants; recovering an interrupted write is the whole of its job.
+called automatically by `approveRun`/`rejectRun`, so skipping any of the checks
+below is something a person has to write down on purpose. It takes the same
+`Actor` and runs the same `assertHuman`/approver-name checks, and requires the
+same typed confirmation - built from the level and verdict *recorded in the
+event* rather than a fresh assessment, since re-judging a decision against
+today's score is a separate rule this project does not break. State plainly
+what that means rather than understating it: healing is not "not meant to be
+stronger than a fresh decision" - a fresh decision requires a non-agent actor,
+an allowlisted name and a typed phrase, and an earlier shape of `healApproval`
+required none of them, which the second review of this mechanism demonstrated
+directly against the built binary. It additionally refuses an event whose
+verdict name does not match what is actually on disk, and refuses one whose
+`configFingerprint` is not shaped like a real one or does not match this run's
+own recorded fingerprint or what resolving its config now produces - checks a
+fresh decision has no equivalent for, because a fresh decision never reads a
+historical claim at all. The one thing that remains genuinely unclosable: a
+human confirming a heal cannot re-derive the recorded level from recorded data
+alone, so a forged event that understates its own risk - claims LOW when the
+change was actually CRITICAL - is not caught. That is the actual residual gap,
+and it is narrow.
 
 ### What is, and is not, confined to `.rpt/`
 
@@ -304,13 +315,23 @@ happens to the snapshot file afterward. A missing snapshot used to read
 identically to "this run predates the feature" and silently fall back to a live
 read - which also silenced the drift finding meant to expose exactly that,
 since the fallback and the "live" side of the drift comparison were then the
-same read: one removal turning the protection and the alarm off together. A
-run whose `RunStarted` recorded a fingerprint now forces the drift finding
-instead whenever the snapshot is missing, corrupt, or does not match that
-fingerprint - an edit made during or after a run can still not change what that
-run is scored against, and now cannot silence the finding that says so either.
-What this does not close: the snapshot for a run is only as trustworthy as
-whatever `rpt.config.json` already said the moment that run started, which a
+same read: one removal turning the protection and the alarm off together.
+Welding the alarm on by itself was still not enough, and shipped that way once:
+a run whose `RunStarted` recorded a fingerprint forced the drift finding
+whenever the snapshot was missing, corrupt, or did not match that fingerprint,
+but the config actually used to score the run on that path was still a live
+read of `rpt.config.json` - the exact file whoever deleted or altered the
+snapshot already controls, so the "protection" and the alarm were still two
+different things and only one of them was ever fixed. On that path the config
+used is now `DEFAULT_CONFIG` - rpt's own shipped defaults, not the
+repository's file - so an edit made during or after a run *cannot* change what
+that run is scored against in any of the three cases the fingerprint check
+exists to catch (missing, corrupt, or mismatched), and the drift finding still
+fires so the substitution is visible rather than silent. Restoring the real
+snapshot (or a fresh run, which snapshots again) recovers the real config
+immediately: this is a degradation, not a refusal, on purpose. What this does
+not close: the snapshot for a run is only as trustworthy as whatever
+`rpt.config.json` already said the moment that run started, which a
 *previous*, already-approved run could have poisoned. Closing that would
 require the config itself to be an append-only, independently-reviewed record,
 which it is not.
@@ -322,14 +343,18 @@ listed above, the same as any other file it can edit, and to `rpt.config.json`
 itself. Concretely, none of the following require exploiting a bug: an agent can
 write `.rpt/runs/<id>/approval.json` directly, in the exact schema-valid shape a
 real approval takes, without ever calling `approveRun`. It can append a forged
-`ApprovalGranted` event directly to `events.jsonl` and wait for (or itself call)
-`healApproval` - which will refuse a forgery that claims CRITICAL or names the
-wrong verdict, but not one that understates its own risk, as above. It can run
-inside a pseudo-terminal it fully controls (`script`, `expect`, a harness that
-gives it raw shell access), which can make the `isTTY` checks *and* a typed
-response at `/dev/tty` succeed with no human ever involved, if it is willing to
-script that impersonation. None of these are exotic: they are what "has write
-access to the repository and can spawn processes" already grants. A checksum
+`ApprovalGranted` event directly to `events.jsonl` and wait for a human to call
+`healApproval` on it - which will refuse a forgery that claims CRITICAL or
+names the wrong verdict, but not one that understates its own risk, as above;
+completing the forgery itself, rather than waiting, needs the same pseudo-
+terminal impersonation as a fresh decision, since `healApproval` requires the
+same actor and confirmation checks - calling the function is not enough by
+itself. It can run inside a pseudo-terminal it fully controls (`script`,
+`expect`, a harness that gives it raw shell access), which can make the
+`isTTY` checks *and* a typed response at `/dev/tty` succeed with no human ever
+involved, if it is willing to script that impersonation. None of these are
+exotic: they are what "has write access to the repository and can spawn
+processes" already grants. A checksum
 chained over events, verified by the same machine running the agent, is a speed
 bump against an accidental or careless write, not a defence against a deliberate
 one - the machine that could forge the write can just as easily recompute the

@@ -5,19 +5,40 @@ export type SecretFinding = { rule: string; path: string; line: number };
 const MIN_SECRET_LENGTH = 20;
 const MIN_ENTROPY_BITS_PER_CHAR = 3.5;
 
+// A hunk header ("@@ -oldStart[,oldLines] +newStart[,newLines] @@") carries the
+// real starting line number of what follows in the new file. Counting added
+// lines ordinally from the top of the file, instead of resetting to this
+// number at each hunk, gives the right line for a single-hunk diff and a wrong
+// one for any later hunk - and a confidently wrong location in a security
+// finding is worse than none, since it is what lands in the event log and a
+// git note.
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
 export function scanSecrets(patch: string): SecretFinding[] {
 	const findings: SecretFinding[] = [];
 	let path = "unknown";
 	let line = 0;
 	for (const raw of patch.split("\n")) {
-		if (raw.startsWith("+++ b/")) {
-			path = raw.slice("+++ b/".length);
-			line = 0;
+		if (raw.startsWith("+++")) {
+			// The new-file header line itself, e.g. "+++ b/x.ts" for an ordinary
+			// change or "+++ /dev/null" for a deletion - never diff content, even
+			// though it starts with "+".
+			if (raw.startsWith("+++ b/")) path = raw.slice("+++ b/".length);
 			continue;
 		}
-		if (!raw.startsWith("+") || raw.startsWith("+++")) continue;
-		line += 1;
-		findings.push(...findingsIn(raw.slice(1), path, line));
+		const hunkStart = HUNK_HEADER.exec(raw)?.[1];
+		if (hunkStart !== undefined) {
+			line = Number(hunkStart);
+			continue;
+		}
+		if (raw.startsWith("+")) {
+			findings.push(...findingsIn(raw.slice(1), path, line));
+			line += 1;
+		} else if (raw.startsWith(" ")) {
+			// An unchanged context line still occupies a line in the new file.
+			line += 1;
+		}
+		// A removed line ("-...") occupies no position in the new file at all.
 	}
 	return findings;
 }

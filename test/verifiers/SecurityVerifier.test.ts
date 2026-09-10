@@ -52,9 +52,24 @@ async function pathWithoutNpm(): Promise<void> {
 }
 
 const CLEAN_AUDIT_JSON = JSON.stringify({ auditReportVersion: 2, vulnerabilities: {} });
-const FINDINGS_AUDIT_JSON = JSON.stringify({
+
+// Shapes captured by hand from real `npm audit --json` runs: a report always
+// carries per-package severities under `vulnerabilities` and, when it ran to
+// completion, an aggregate `metadata.vulnerabilities` count by severity.
+const HIGH_ONLY_AUDIT_JSON = JSON.stringify({
 	auditReportVersion: 2,
 	vulnerabilities: { qs: { severity: "high" } },
+	metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 } },
+});
+const LOW_ONLY_AUDIT_JSON = JSON.stringify({
+	auditReportVersion: 2,
+	vulnerabilities: { tmp: { severity: "low" } },
+	metadata: { vulnerabilities: { info: 0, low: 1, moderate: 0, high: 0, critical: 0, total: 1 } },
+});
+const MIXED_AUDIT_JSON = JSON.stringify({
+	auditReportVersion: 2,
+	vulnerabilities: { tmp: { severity: "low" }, qs: { severity: "high" } },
+	metadata: { vulnerabilities: { info: 0, low: 1, moderate: 0, high: 1, critical: 0, total: 2 } },
 });
 const ENOLOCK_AUDIT_JSON = JSON.stringify({ error: { code: "ENOLOCK", summary: "requires an existing lockfile" } });
 
@@ -114,12 +129,16 @@ describe("securityVerifier", () => {
 		expect(result.facts.audit).toBe("skipped");
 	});
 
-	it("skips the audit rather than failing when the audit endpoint errors", async () => {
+	it("skips the audit rather than failing when the audit endpoint errors, and keeps the specific reason", async () => {
 		await fakeNpmOnPath(`echo '${ENOLOCK_AUDIT_JSON}'; exit 1`);
 		const context = await contextAfter({ "package.json": "{}\n", "package-lock.json": "{}\n" });
 		const result = await securityVerifier.run(context);
 		expect(result.status).toBe("passed");
 		expect(result.facts.audit).toBe("skipped");
+		// The classifier already knows exactly why (npm's own ENOLOCK error) -
+		// that specific reason must survive, not be replaced by a generic
+		// "command failed" message built from the exit code alone.
+		expect(String(result.facts.auditReason)).toMatch(/enolock/i);
 	});
 
 	it("passes with a clean audit fact when the audit tool runs and finds nothing", async () => {
@@ -130,14 +149,47 @@ describe("securityVerifier", () => {
 		expect(result.facts.audit).toBe("clean");
 	});
 
-	it("fails when the audit tool runs and reports a high severity finding", async () => {
-		await fakeNpmOnPath(`echo '${FINDINGS_AUDIT_JSON}'; exit 1`);
+	it("passes rather than fails when the audit tool runs and only finds low severity advisories", async () => {
+		// npm itself exits 0 here too: --audit-level=high means a low-only
+		// report does not cross the failing threshold.
+		await fakeNpmOnPath(`echo '${LOW_ONLY_AUDIT_JSON}'; exit 0`);
+		const context = await contextAfter({ "package.json": "{}\n", "package-lock.json": "{}\n" });
+		const result = await securityVerifier.run(context);
+		expect(result.status).toBe("passed");
+		expect(result.facts.audit).toBe("clean");
+	});
+
+	it("fails on a mixed report, and names the real severity rather than asserting one it did not check", async () => {
+		await fakeNpmOnPath(`echo '${MIXED_AUDIT_JSON}'; exit 1`);
+		const context = await contextAfter({ "package.json": "{}\n", "package-lock.json": "{}\n" });
+		const result = await securityVerifier.run(context);
+		expect(result.status).toBe("failed");
+		expect(result.facts.audit).toBe("findings");
+		expect(result.reason).toMatch(/1 high/i);
+		expect(result.reason).not.toMatch(/low/i);
+	});
+
+	it("fails when the audit tool runs and reports a high severity finding, naming the count and severity", async () => {
+		await fakeNpmOnPath(`echo '${HIGH_ONLY_AUDIT_JSON}'; exit 1`);
 		const context = await contextAfter({ "package.json": "{}\n", "package-lock.json": "{}\n" });
 		const result = await securityVerifier.run(context);
 		expect(result.status).toBe("failed");
 		expect(result.facts.audit).toBe("findings");
 		expect(result.reason).toMatch(/audit/i);
+		expect(result.reason).toMatch(/1 high/i);
 	});
+
+	it("skips the audit rather than failing, with a labelled reason, when the report exceeds rpt's output limit", async () => {
+		// Mirrors TestVerifier's own maxBuffer-overflow handling: a report this
+		// large should be labelled as an output-limit problem, not treated as
+		// unparseable noise or blamed on the agent as a real finding.
+		await fakeNpmOnPath("yes | head -c 40000000; exit 1");
+		const context = await contextAfter({ "package.json": "{}\n", "package-lock.json": "{}\n" });
+		const result = await securityVerifier.run(context);
+		expect(result.status).toBe("passed");
+		expect(result.facts.audit).toBe("skipped");
+		expect(String(result.facts.auditReason)).toMatch(/output limit/i);
+	}, 20000);
 
 	it("links node_modules from the main checkout for the audit and removes it afterward", async () => {
 		await fakeNpmOnPath(`echo '${CLEAN_AUDIT_JSON}'; exit 0`);

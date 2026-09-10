@@ -36,4 +36,42 @@ describe("scanSecrets", () => {
 	it("finds nothing in an ordinary code change", () => {
 		expect(scanSecrets(patch("export const timeout = AUTHENTICATION_TIMEOUT_MS;"))).toEqual([]);
 	});
+
+	it("tracks the real new-file line number across multiple hunks, not an ordinal count of added lines", () => {
+		// Hunk 1 touches lines 1-3 and adds one line without introducing a
+		// finding. Hunk 2 starts at new-file line 11 (three context lines, then
+		// the finding as the fourth line of the hunk) so the finding's real
+		// position is line 14 - an ordinal count of added lines across the whole
+		// patch would instead call this line 2.
+		const multiHunk = [
+			"diff --git a/x.ts b/x.ts",
+			"--- a/x.ts",
+			"+++ b/x.ts",
+			"@@ -1,3 +1,3 @@",
+			" line1",
+			"-old2",
+			"+new2",
+			" line3",
+			"@@ -11,3 +11,4 @@",
+			" line11",
+			" line12",
+			" line13",
+			"+-----BEGIN RSA PRIVATE KEY-----",
+		].join("\n");
+		const findings = scanSecrets(multiHunk);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.line).toBe(14);
+	});
+
+	it("does not misread a deleted file's '+++ /dev/null' header as added content", () => {
+		const deletion = [
+			"diff --git a/key.pem b/key.pem",
+			"deleted file mode 100644",
+			"--- a/key.pem",
+			"+++ /dev/null",
+			"@@ -1 +0,0 @@",
+			"------BEGIN RSA PRIVATE KEY-----",
+		].join("\n");
+		expect(scanSecrets(deletion)).toEqual([]);
+	});
 });

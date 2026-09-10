@@ -8,6 +8,15 @@ import { failed, passed, type RunContext, type Verifier, type VerifierResult } f
 
 const run = promisify(exec);
 const AUDIT_TIMEOUT_MS = 90 * 1000;
+// Matches TestVerifier's own cap: bounds memory and rules out an oversized
+// report looking like a hang, while still giving it a specific, labelled
+// reason instead of an unexplained failure.
+const MAX_BUFFER_BYTES = 32 * 1024 * 1024;
+// Node reports a maxBuffer kill with this string in place of a numeric exit
+// code - not part of the documented ExecException shape, but the real
+// runtime value (confirmed against TestVerifier's own handling of it).
+const MAX_BUFFER_EXCEEDED_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+const FAILING_SEVERITIES = ["critical", "high"] as const;
 
 type AuditOutcome = "clean" | "findings" | "skipped" | "not-applicable";
 type AuditResult = { outcome: AuditOutcome; reason: string | null };
@@ -18,7 +27,7 @@ export const securityVerifier: Verifier = {
 		const patch = await diffPatch(context.repoRoot, context.baseSha, context.endSha);
 		const secretFindings = scanSecrets(patch);
 		const audit = await auditIfManifestChanged(context);
-		const facts = { secretFindings, audit: audit.outcome };
+		const facts = { secretFindings, audit: audit.outcome, auditReason: audit.reason };
 
 		if (secretFindings.length > 0) {
 			return failed("security", `${secretFindings.length} possible secret(s): ${describe(secretFindings)}`, facts);
@@ -105,7 +114,12 @@ async function inspectEntry(path: string): Promise<"absent" | "usable" | "broken
 	}
 }
 
-type AuditReport = { vulnerabilities?: Record<string, unknown> };
+type VulnerabilityEntry = { severity?: unknown };
+type SeverityCounts = { info: number; low: number; moderate: number; high: number; critical: number };
+type AuditReport = {
+	vulnerabilities?: Record<string, VulnerabilityEntry>;
+	metadata?: { vulnerabilities?: unknown };
+};
 type AuditFailure = { code?: number | string; killed?: boolean; stdout?: string; message: string };
 
 async function runAudit(worktree: string): Promise<AuditResult> {
@@ -113,22 +127,27 @@ async function runAudit(worktree: string): Promise<AuditResult> {
 		const { stdout } = await run("npm audit --audit-level=high --json", {
 			cwd: worktree,
 			timeout: AUDIT_TIMEOUT_MS,
+			maxBuffer: MAX_BUFFER_BYTES,
 		});
 		return classify(stdout);
 	} catch (error) {
 		const failure = error as AuditFailure;
 		// npm exits non-zero both when it finds high severity advisories and when
 		// it fails to run at all (no network, a stale lockfile) - the two are
-		// indistinguishable by exit code alone. What tells them apart is whether
-		// npm ever produced its own audit report: a report with a top-level
-		// "error" key, or no parseable JSON at all, means npm never really started
-		// the audit; a report with a "vulnerabilities" key means it did, and the
-		// findings are real evidence.
+		// indistinguishable by exit code alone. A process-level signal (a timeout
+		// or output-limit kill, or "npm" not resolving to a binary at all) is
+		// checked first and, when present, always wins: it means npm never
+		// produced a report worth reading, however much noise happens to be on
+		// stdout. Absent one of those, whatever npm did print is the real
+		// classification - including a specific reason for a report shaped like
+		// "it never really started" (a top-level "error" key), which must reach
+		// the caller as-is rather than being overwritten by a generic message.
+		const signal = environmentalSignal(failure);
+		if (signal !== null) return { outcome: "skipped", reason: signal };
 		if (typeof failure.stdout === "string" && failure.stdout.trim() !== "") {
-			const outcome = classify(failure.stdout);
-			if (outcome.outcome !== "skipped") return outcome;
+			return classify(failure.stdout);
 		}
-		return { outcome: "skipped", reason: environmentalReason(failure) };
+		return { outcome: "skipped", reason: `npm audit failed to run: ${firstLine(failure.message)}` };
 	}
 }
 
@@ -150,22 +169,65 @@ function classify(stdout: string): AuditResult {
 		return { outcome: "skipped", reason: `npm audit could not run: ${detail}` };
 	}
 
-	const report = record as AuditReport;
-	const vulnerabilityCount = Object.keys(report.vulnerabilities ?? {}).length;
-	if (vulnerabilityCount > 0) {
-		return { outcome: "findings", reason: "dependency audit reported high severity findings" };
+	const counts = severityCounts(record as AuditReport);
+	const failing = FAILING_SEVERITIES.map((severity) => ({ severity, count: counts[severity] })).filter(
+		({ count }) => count > 0,
+	);
+	if (failing.length > 0) {
+		return { outcome: "findings", reason: describeFindings(failing) };
 	}
 	return { outcome: "clean", reason: null };
 }
 
-function environmentalReason(failure: AuditFailure): string {
+// The rule only fails on high and critical advisories (matching the
+// --audit-level=high threshold the audit itself was run with) - a report
+// carrying only low or moderate entries, which real lockfiles very often do,
+// must not be reported as a high severity finding just because the
+// vulnerabilities list is non-empty.
+function severityCounts(report: AuditReport): SeverityCounts {
+	const metadataCounts = report.metadata?.vulnerabilities;
+	if (isSeverityCounts(metadataCounts)) return metadataCounts;
+	return tallyEntrySeverities(report.vulnerabilities ?? {});
+}
+
+function isSeverityCounts(value: unknown): value is SeverityCounts {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value as Record<string, unknown>;
+	return ["info", "low", "moderate", "high", "critical"].every((key) => typeof record[key] === "number");
+}
+
+function tallyEntrySeverities(vulnerabilities: Record<string, VulnerabilityEntry>): SeverityCounts {
+	const counts: SeverityCounts = { info: 0, low: 0, moderate: 0, high: 0, critical: 0 };
+	for (const entry of Object.values(vulnerabilities)) {
+		if (typeof entry.severity === "string" && entry.severity in counts) {
+			counts[entry.severity as keyof SeverityCounts] += 1;
+		}
+	}
+	return counts;
+}
+
+// States what was actually found - the counts and the severities that
+// actually cleared the threshold - rather than a fixed phrase that asserts a
+// severity the code never checked.
+function describeFindings(failing: readonly { severity: string; count: number }[]): string {
+	const parts = failing.map(({ severity, count }) => `${count} ${severity}`).join(", ");
+	const total = failing.reduce((sum, { count }) => sum + count, 0);
+	return `dependency audit found ${parts} severity ${total === 1 ? "advisory" : "advisories"}`;
+}
+
+// Returns a reason only for a process-level signal strong enough to override
+// whatever npm printed to stdout; null means "inspect stdout instead".
+function environmentalSignal(failure: AuditFailure): string | null {
 	if (failure.killed) {
 		return `npm audit was killed after exceeding rpt's timeout deadline of ${AUDIT_TIMEOUT_MS}ms; rpt did not observe an audit result for this run`;
+	}
+	if (failure.code === MAX_BUFFER_EXCEEDED_CODE) {
+		return `npm audit was killed after exceeding rpt's output limit of ${MAX_BUFFER_BYTES / (1024 * 1024)}MB; rpt did not observe an audit result for this run`;
 	}
 	if (failure.code === 127) {
 		return "npm is not available on PATH; rpt could not run a dependency audit for this run";
 	}
-	return `npm audit failed to run: ${firstLine(failure.message)}`;
+	return null;
 }
 
 function firstLine(message: string): string {

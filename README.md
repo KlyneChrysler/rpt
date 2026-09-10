@@ -230,41 +230,79 @@ Say this plainly, without hedging: rpt is a check against agent error, drift, an
 unverified work. It is not a check against an agent that is deliberately attacking
 rpt itself.
 
-Every record rpt keeps - the event log, the verdict, the risk assessment, the
-approval - lives in `.rpt/` inside the repository the agent is working in. An agent
-with write access to that repository has write access to every one of those files,
-the same as any other file it can edit. Nothing in rpt's design changes that: no
-local tool can defend a record against an adversary who can write to the filesystem
-that record lives on. A checksum chained over events verified by the same machine
-running the agent is a speed bump against an accidental or careless write, not a
-defence against a deliberate one - the machine that could forge the write can just
-as easily recompute the chain over the forgery.
+### What rpt actually checks before recording a human decision
 
-Concretely, none of the following require exploiting a bug: an agent can write
-`.rpt/runs/<id>/approval.json` directly, in the exact shape a real approval takes,
-without ever calling `approveRun`. It can construct an `Actor` value in-process with
-`interactive: true, agentContext: "human"` and pass it straight to `approveRun`,
-bypassing `actorFromEnvironment` and the terminal confirmation it requires. It can
-run inside a pseudo-terminal it fully controls (`script`, `expect`, a harness that
-gives it raw shell access), which can make both `isTTY` checks and a typed
-confirmation at `/dev/tty` succeed with no human ever involved, if the agent is
-willing to script that impersonation. None of these are exotic: they are what "has
-write access to the repository and can spawn processes" already grants.
+`approveRun`/`rejectRun` (`src/app/approveRun.ts`) will not record a decision
+without, in order: a cheap pre-check that the caller-supplied `Actor` is not a
+known agent context and claims an interactive terminal; the run's own risk,
+computed from its verdict and its config snapshot (below); and, for any decision
+that reaches that point, a confirmation that must be *typed*, at that moment, at
+the process's controlling terminal (`/dev/tty`, not standard input, so piping or
+redirecting stdin does not satisfy it) - not read from any field the caller
+supplies. That confirmation is bound to the specific run id, decision, verdict
+name and risk level (`confirmationPhrase`): a captured "yes" does not authorise
+a second decision, on this run or any other.
 
-What rpt's human-only check (`assertHuman` in `src/app/approveRun.ts`) actually
-raises is the cost of an *unintentional* or *incidental* bypass - an agent whose
-environment happens to look interactive, or whose context marker happens to be
-unset, no longer passes by accident. It requires two independent signals
-(a real terminal, and a definite absence of a known agent context) and a value
-typed at the controlling terminal rather than standard input, so redirecting or
-piping stdin does not satisfy it for free. That is real, useful hardening against
-carelessness and against tooling that was never trying to defeat the check. It is
-not, and does not claim to be, a defence against an agent actively trying to.
+A CRITICAL-risk run has no approval path at all: `decide()` (`src/domain/policy.ts`)
+returns `"block"` for CRITICAL before it even looks at the verdict, and
+`record()`'s only enforcement of that - gated on `decision === "approved"`, since
+rejecting a CRITICAL run is a human saying no, not a sign-off, and must stay
+recordable - is the sole place in the codebase that prohibition is enforced. Its
+limit: the risk level it gates on is computed from a config snapshot taken at
+this run's start (below), not from an unbounded read: a project can still tune
+`rpt.config.json`'s thresholds close to the schema's `[0, 100]` ceiling to make
+CRITICAL hard, if not impossible, to reach honestly, and that edit is itself a
+scored, visible finding (`rpt-config-changed`) rather than a silent one - visible,
+not prevented.
 
-If you need a guarantee that survives a hostile agent with repository write access,
-it has to come from outside this repository entirely: a review gate the agent
-cannot write to (a branch protection rule enforced by a server the agent has no
-credentials for, a human approval step in a CI system, a signature the agent cannot
-produce). rpt's job ends at making the agent's own claims checkable and making the
-one place a human decision is recorded resistant to accidental self-clearing - not
-at defending that record against an agent that has decided to attack it.
+### What is, and is not, confined to `.rpt/`
+
+The event log, the verdict, the risk assessment and the approval all live under
+`.rpt/` in the repository the agent is working in, validated on read (schema plus
+run-id binding on both the verdict and the approval record) so a hand-edited or
+mismatched file is refused rather than trusted. Risk scoring also depends on
+`rpt.config.json` at the repository root - outside `.rpt/`, and just as writable
+by an agent as anything else in the repo. Each run now snapshots the effective
+config once, at its own start (`src/store/runConfig.ts`), and verification and
+approval judge that run against the snapshot, not a live read - so an edit made
+during or after a run no longer changes what that same run is judged against, and
+a live-vs-snapshot drift is itself scored. What this does not close: the snapshot
+for a run is only as trustworthy as whatever `rpt.config.json` already said the
+moment that run started, which a *previous*, already-approved run could have
+poisoned. Closing that would require the config itself to be an append-only,
+independently-reviewed record, which it is not.
+
+### Why none of this defends against a hostile agent
+
+An agent with write access to the repository has write access to every record
+listed above, the same as any other file it can edit, and to `rpt.config.json`
+itself. Concretely, none of the following require exploiting a bug: an agent can
+write `.rpt/runs/<id>/approval.json` directly, in the exact schema-valid shape a
+real approval takes, without ever calling `approveRun`. It can run inside a
+pseudo-terminal it fully controls (`script`, `expect`, a harness that gives it
+raw shell access), which can make the `isTTY` checks *and* a typed response at
+`/dev/tty` succeed with no human ever involved, if it is willing to script that
+impersonation. Neither of these is exotic: they are what "has write access to the
+repository and can spawn processes" already grants. A checksum chained over
+events, verified by the same machine running the agent, is a speed bump against
+an accidental or careless write, not a defence against a deliberate one - the
+machine that could forge the write can just as easily recompute the chain over
+the forgery.
+
+What rpt's checks actually raise is the cost of an *unintentional* or *incidental*
+bypass - an agent whose environment happens to look interactive no longer passes
+by accident, and a bypass now requires either forging the record directly
+(skipping `approveRun`/`rejectRun` entirely) or actively impersonating a person
+at a real terminal, not just looking like one. That is real, useful hardening
+against carelessness and against tooling that was never trying to defeat the
+check. It is not, and does not claim to be, a defence against an agent actively
+trying to.
+
+If you need a guarantee that survives a hostile agent with repository write
+access, it has to come from outside this repository entirely: a review gate the
+agent cannot write to (a branch protection rule enforced by a server the agent
+has no credentials for, a human approval step in a CI system, a signature the
+agent cannot produce). rpt's job ends at making the agent's own claims checkable
+and making the one place a human decision is recorded resistant to accidental
+self-clearing - not at defending that record against an agent that has decided
+to attack it.

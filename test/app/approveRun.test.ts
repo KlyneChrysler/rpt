@@ -1,7 +1,18 @@
 import { mkdir } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
-import { actorFromEnvironment, approveRun, isConfirmed, readApproval, rejectRun, type Actor } from "../../src/app/approveRun.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../src/app/terminalConfirm.js", () => ({ readFromControllingTerminal: vi.fn() }));
+
+import {
+	actorFromEnvironment,
+	approveRun,
+	confirmationPhrase,
+	readApproval,
+	rejectRun,
+	type Actor,
+} from "../../src/app/approveRun.js";
 import { initRepo } from "../../src/app/initRepo.js";
+import { readFromControllingTerminal } from "../../src/app/terminalConfirm.js";
 import { readVerdict, verifyRun } from "../../src/app/verifyRun.js";
 import { writeApproval } from "../../src/store/approvals.js";
 import { appendEvent } from "../../src/store/eventLog.js";
@@ -11,6 +22,21 @@ import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
 const human: Actor = { name: "klyne", interactive: true, agentContext: "human" };
 const agent: Actor = { name: "claude", interactive: false, agentContext: "agent" };
+
+// Every real interactive path in record() now requires a typed confirmation.
+// The default behaviour here mirrors what a human actually does with the
+// prompt: reads what it asks them to type, and types exactly that back -
+// extracted from the quoted phrase in the prompt text rather than
+// recomputing it, so this stays a black-box stand-in for a person rather
+// than a second copy of confirmationPhrase's own logic. Individual tests
+// override this to exercise a wrong or missing confirmation.
+beforeEach(() => {
+	vi.mocked(readFromControllingTerminal).mockReset();
+	vi.mocked(readFromControllingTerminal).mockImplementation(async (prompt: string) => {
+		const match = /"([^"]+)"/.exec(prompt);
+		return match?.[1] ?? "";
+	});
+});
 
 async function verifiedRepo(): Promise<string> {
 	const repo = await makeFixtureRepo();
@@ -101,7 +127,7 @@ describe("approveRun", () => {
 
 	it("refuses an approver name containing a newline", async () => {
 		const forger: Actor = { name: "klyne\nrpt: FORGED LINE", interactive: true, agentContext: "human" };
-		await expect(approveRun(await verifiedRepo(), 1, forger)).rejects.toThrow(/control character/i);
+		await expect(approveRun(await verifiedRepo(), 1, forger)).rejects.toThrow(/disallowed character/i);
 	});
 
 	it("refuses an empty approver name", async () => {
@@ -143,6 +169,40 @@ describe("approveRun", () => {
 		expect(await readApproval(repo, 1)).not.toBeNull();
 	});
 
+	it("heals from the event's own recorded payload, not from the live actor calling record()", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: "2020-01-01T00:00:00.000Z",
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: { by: "the-original-approver", override: true, level: "LOW", verdictName: verdict?.name },
+		});
+		// A different human retries the interrupted write.
+		const retryer: Actor = { name: "someone-else", interactive: true, agentContext: "human" };
+		const approval = await approveRun(repo, 1, retryer);
+		expect(approval.by).toBe("the-original-approver");
+		expect(approval.at).toBe("2020-01-01T00:00:00.000Z");
+		// The mandatory confirmation must not even be asked on a heal - it
+		// already ran when the event was written.
+		expect(readFromControllingTerminal).not.toHaveBeenCalled();
+	});
+
+	it("does not re-run the critical gate on a heal, even if the score would now block it", async () => {
+		// Approve for real at whatever (non-critical) level this fixture scores
+		// at, then delete the file to simulate the interrupted-write scenario,
+		// and confirm the retry still succeeds without recomputing risk.
+		const repo = await verifiedRepo();
+		await approveRun(repo, 1, human);
+		const { rm } = await import("node:fs/promises");
+		const { approvalPathOf } = await import("../../src/store/paths.js");
+		await rm(approvalPathOf(rptDirOf(repo), 1));
+		vi.mocked(readFromControllingTerminal).mockClear();
+		const approval = await approveRun(repo, 1, human);
+		expect(approval.decision).toBe("approved");
+		expect(readFromControllingTerminal).not.toHaveBeenCalled();
+	});
+
 	it("refuses a conflicting decision when the event log already recorded the opposite outcome", async () => {
 		const repo = await verifiedRepo();
 		const verdict = await readVerdict(repo, 1);
@@ -153,6 +213,40 @@ describe("approveRun", () => {
 			payload: { by: "klyne", override: true, level: "LOW", verdictName: verdict?.name },
 		});
 		await expect(rejectRun(repo, 1, human)).rejects.toThrow();
+	});
+});
+
+describe("record()'s mandatory typed confirmation", () => {
+	it("prompts with the run id, the decision, the verdict and the risk level", async () => {
+		const repo = await verifiedRepo();
+		await approveRun(repo, 1, human);
+		const verdict = await readVerdict(repo, 1);
+		const prompt = vi.mocked(readFromControllingTerminal).mock.calls[0]?.[0];
+		expect(prompt).toContain("1");
+		expect(prompt).toContain("approved");
+		expect(prompt).toContain(verdict?.name);
+	});
+
+	it("refuses when the typed confirmation does not match", async () => {
+		vi.mocked(readFromControllingTerminal).mockResolvedValue("yes");
+		await expect(approveRun(await verifiedRepo(), 1, human)).rejects.toThrow(/did not match/i);
+	});
+
+	it("refuses when the controlling terminal cannot be opened", async () => {
+		vi.mocked(readFromControllingTerminal).mockRejectedValue(new Error("ENXIO: no such device"));
+		await expect(approveRun(await verifiedRepo(), 1, human)).rejects.toThrow(/could not be opened/i);
+	});
+
+	// Demonstrates the fix directly: a confirmation is bound to the specific
+	// decision, not a reusable "yes" that authorises anything. A phrase
+	// computed for approving this exact run does not also authorise
+	// rejecting it.
+	it("does not accept a confirmation phrase bound to a different decision on the same run", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		const phraseForApproving = confirmationPhrase(1, "approved", verdict!.name, "LOW");
+		vi.mocked(readFromControllingTerminal).mockResolvedValue(phraseForApproving);
+		await expect(rejectRun(repo, 1, human)).rejects.toThrow(/did not match/i);
 	});
 });
 
@@ -189,36 +283,28 @@ describe("readApproval", () => {
 });
 
 describe("actorFromEnvironment", () => {
-	// The one path safe to exercise without a real controlling terminal: a
-	// known agent marker refuses immediately and never touches /dev/tty, so
-	// this cannot hang waiting for input the way the "no marker" path could
-	// in an environment that does have a real terminal attached.
-	it("reports 'agent' immediately, without attempting a terminal confirmation, when a known marker is set", async () => {
+	// No I/O at all any more - env inspection can prove "agent" but never
+	// "human" - so both branches are safe to exercise directly.
+	it("reports 'agent' when a known marker is set", () => {
 		const original = process.env.CLAUDECODE;
 		process.env.CLAUDECODE = "1";
 		try {
-			const actor = await actorFromEnvironment();
-			expect(actor.agentContext).toBe("agent");
+			expect(actorFromEnvironment().agentContext).toBe("agent");
 		} finally {
 			if (original === undefined) delete process.env.CLAUDECODE;
 			else process.env.CLAUDECODE = original;
 		}
 	});
-});
 
-describe("isConfirmed", () => {
-	it("accepts the exact confirmation token", () => {
-		expect(isConfirmed("yes")).toBe(true);
-	});
-
-	it("trims surrounding whitespace", () => {
-		expect(isConfirmed("  yes\n")).toBe(true);
-	});
-
-	it("rejects anything else, including a near miss", () => {
-		expect(isConfirmed("Yes")).toBe(false);
-		expect(isConfirmed("y")).toBe(false);
-		expect(isConfirmed("")).toBe(false);
+	it("reports 'unknown', never 'human', when no marker is set", () => {
+		const original = { CLAUDECODE: process.env.CLAUDECODE, RPT_AGENT_CONTEXT: process.env.RPT_AGENT_CONTEXT };
+		delete process.env.CLAUDECODE;
+		delete process.env.RPT_AGENT_CONTEXT;
+		try {
+			expect(actorFromEnvironment().agentContext).toBe("unknown");
+		} finally {
+			if (original.CLAUDECODE !== undefined) process.env.CLAUDECODE = original.CLAUDECODE;
+			if (original.RPT_AGENT_CONTEXT !== undefined) process.env.RPT_AGENT_CONTEXT = original.RPT_AGENT_CONTEXT;
+		}
 	});
 });
-

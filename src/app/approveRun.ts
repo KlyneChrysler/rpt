@@ -1,84 +1,51 @@
-import { once } from "node:events";
-import { createReadStream, createWriteStream } from "node:fs";
-import { createInterface } from "node:readline/promises";
 import { loadConfig } from "../config/load.js";
+import type { RptConfig } from "../config/schema.js";
 import { isValidApproverName, type Approval, type ApprovalDecision } from "../domain/approval.js";
-import type { RunId } from "../domain/events.js";
-import { decide } from "../domain/policy.js";
+import type { AgentEvent, EventKind, RunId } from "../domain/events.js";
+import { decide, RISK_LEVELS, type RiskLevel } from "../domain/policy.js";
 import { applyApprovalDecision } from "../domain/run.js";
+import type { VerdictName } from "../domain/verdict.js";
 import { assessRisk } from "../risk/assess.js";
 import { buildFacts } from "../risk/facts.js";
-import { appendEvent } from "../store/eventLog.js";
+import { appendEventIfNoneOfKind, readEvents } from "../store/eventLog.js";
 import { readApproval as readApprovalRecord, writeApproval } from "../store/approvals.js";
 import { rptDirOf } from "../store/paths.js";
 import { upsertRun } from "../store/runIndex.js";
 import { loadRun } from "./loadRun.js";
+import { loadRunConfig } from "./loadRunConfig.js";
+import { readFromControllingTerminal } from "./terminalConfirm.js";
 import { readVerdict } from "./verifyRun.js";
 
-// "agent": a known marker was found - an absolute refusal, no confirmation
-// can override it. "unknown": no marker was found, which is not the same as
-// proof no agent is present - the brief demanded refusal on uncertainty, and
-// treating a silent environment as a human was exactly the gap that let one
-// through. "human": positively established - today, the only way there is a
-// typed confirmation read from the controlling terminal (see
-// actorFromEnvironment below); nothing in this module infers it from absence.
+const APPROVAL_EVENT_KINDS: readonly EventKind[] = ["ApprovalGranted", "ApprovalDenied"];
+
+// "agent": a known marker was found - an absolute refusal. "unknown": no
+// marker was found, which is not proof no agent is present - a silent
+// environment must not be read as proof of a human. Neither value is what
+// actually authorises a decision any more (see record() below); this is a
+// cheap, no-I/O pre-check that spares an honest agent-marked caller from
+// ever reaching the real one.
 export type AgentContextSignal = "agent" | "human" | "unknown";
 
 export type Actor = { name: string; interactive: boolean; agentContext: AgentContextSignal };
 
-const CONTROLLING_TERMINAL_DEVICE = "/dev/tty";
-const CONFIRMATION_TOKEN = "yes";
-const CONFIRMATION_PROMPT = "rpt: type 'yes' at this terminal to confirm a human is recording this decision: ";
-
-export async function actorFromEnvironment(): Promise<Actor> {
-	const name = process.env.USER ?? process.env.LOGNAME ?? "unknown";
-	const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
-	if (knownAgentMarkerPresent()) {
-		return { name, interactive, agentContext: "agent" };
-	}
-	const humanConfirmed = await confirmedAtControllingTerminal();
-	return { name, interactive, agentContext: humanConfirmed ? "human" : "unknown" };
+// Environment inspection alone can prove "agent" (a known marker is
+// present) but never "human" - there is no environment variable or TTY flag
+// that positively establishes a person is present, only the absence of
+// evidence for an agent. This function is honest about that limit: it never
+// returns agentContext: "human". The actual proof of a human now lives in
+// record()'s mandatory typed confirmation (see below), which is
+// unconditional for any actor that reaches it - so an Actor's agentContext
+// and interactive fields are a fast pre-check, not the gate itself.
+export function actorFromEnvironment(): Actor {
+	return {
+		name: process.env.USER ?? process.env.LOGNAME ?? "unknown",
+		interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+		agentContext: knownAgentMarkerPresent() ? "agent" : "unknown",
+	};
 }
 
 function knownAgentMarkerPresent(): boolean {
 	return process.env.RPT_AGENT_CONTEXT === "1" || process.env.CLAUDECODE === "1";
-}
-
-// Reads from the controlling terminal device, not standard input, so a typed
-// answer survives stdin/stdout being redirected or piped - the exact gap an
-// automated bypass exploits by attaching a pseudo-terminal that satisfies the
-// isTTY checks without a human ever being asked anything. This converts the
-// check from "this process has a terminal" to "a human typed something at
-// it", which defeats a bypass that is not actively impersonating a person -
-// it does not, and cannot, defend against one that is: see README.
-async function confirmedAtControllingTerminal(): Promise<boolean> {
-	let typed: string;
-	try {
-		typed = await readLineFromControllingTerminal(CONFIRMATION_PROMPT);
-	} catch {
-		// No controlling terminal to ask - refuse rather than guess. This is
-		// the failure mode the brief asked for: unable to determine, so no.
-		return false;
-	}
-	return isConfirmed(typed);
-}
-
-export function isConfirmed(typed: string): boolean {
-	return typed.trim() === CONFIRMATION_TOKEN;
-}
-
-async function readLineFromControllingTerminal(prompt: string): Promise<string> {
-	const input = createReadStream(CONTROLLING_TERMINAL_DEVICE);
-	const output = createWriteStream(CONTROLLING_TERMINAL_DEVICE);
-	await Promise.all([once(input, "open"), once(output, "open")]);
-	const rl = createInterface({ input, output, terminal: true });
-	try {
-		return await rl.question(prompt);
-	} finally {
-		rl.close();
-		input.destroy();
-		output.destroy();
-	}
 }
 
 export function approveRun(repoRoot: string, runId: RunId, actor: Actor): Promise<Approval> {
@@ -89,11 +56,11 @@ export function rejectRun(repoRoot: string, runId: RunId, actor: Actor): Promise
 	return record(repoRoot, runId, actor, "rejected");
 }
 
-// The load-bearing read of the whole project: override is never trusted from
-// disk. A hand-edited approval.json could claim override: false for a run
-// that was never VERIFIED; re-deriving it from the verdict on every read,
-// rather than returning whatever the file says, keeps there being one source
-// of truth for that claim instead of two copies with nothing binding them.
+// override is never trusted from disk. A hand-edited approval.json could
+// claim override: false for a run that was never VERIFIED; re-deriving it
+// from the verdict on every read, rather than returning whatever the file
+// says, keeps there being one source of truth for that claim instead of two
+// copies with nothing binding them.
 export async function readApproval(repoRoot: string, runId: RunId): Promise<Approval | null> {
 	const raw = await readApprovalRecord(rptDirOf(repoRoot), runId);
 	if (raw === null) return null;
@@ -107,7 +74,7 @@ export async function readApproval(repoRoot: string, runId: RunId): Promise<Appr
 async function record(repoRoot: string, runId: RunId, actor: Actor, decision: ApprovalDecision): Promise<Approval> {
 	assertHuman(actor);
 	if (!isValidApproverName(actor.name)) {
-		throw new Error("approver name is empty, longer than 200 characters, or contains a control character");
+		throw new Error("approver name is empty, too long, or contains a disallowed character");
 	}
 
 	const rptDir = rptDirOf(repoRoot);
@@ -121,26 +88,51 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 
 	// A run whose projected state already shows this exact outcome, with no
 	// approval.json on disk, is not a fresh decision - it is a prior attempt
-	// whose event append succeeded and whose file write did not. Retrying
-	// completes that write instead of either re-appending a second event
-	// (which projectRun's reducer would reject as an illegal replay) or
-	// refusing a retry that has every right to succeed.
+	// whose event append succeeded and whose file write did not. Heal from
+	// the event's own recorded payload rather than the live inputs of this
+	// call: rebuilding from live actor/config/risk would let a healing retry
+	// silently record a different approver than the event says, or re-run a
+	// gate that already ran once, against a score that may have moved bands
+	// since - permanently stuck if it now disagrees. The event is the
+	// decision; this call is only finishing writing it down.
 	const outcomeState = decision === "approved" ? "APPROVED" : "REJECTED";
-	const healing = run.state === outcomeState;
-	if (!healing) {
-		// Throws (IllegalTransitionError, via applyApprovalDecision) for a run
-		// this decision cannot legally apply to: never verified, already
-		// decided the other way, or already recorded - a state precondition
-		// enforced by the same transition graph the projection itself uses,
-		// not by approval.json's mere presence or absence.
-		applyApprovalDecision(run.state, verdict.name, decision);
+	if (run.state === outcomeState) {
+		const approval = await approvalFromRecordedEvent(rptDir, runId, decision);
+		await writeApproval(rptDir, approval);
+		await upsertRun(rptDir, { id: runId, task: run.task, state: outcomeState, startedAt: run.startedAt, endedAt: run.endedAt });
+		return approval;
 	}
 
-	const config = await loadConfig(repoRoot);
-	const { level } = assessRisk(buildFacts(verdict.results, config), config);
+	// Throws (IllegalTransitionError, via applyApprovalDecision) for a run
+	// this decision cannot legally apply to: never verified, already decided
+	// the other way, or already recorded - a state precondition enforced by
+	// the same transition graph the projection itself uses.
+	applyApprovalDecision(run.state, verdict.name, decision);
+
+	const snapshot = await loadRunConfig(repoRoot, runId);
+	const configChangedSinceSnapshot = await hasConfigDrifted(repoRoot, snapshot);
+	const { level } = assessRisk(buildFacts(verdict.results, snapshot, configChangedSinceSnapshot), snapshot);
+
+	// Gated on decision === "approved" only, and that qualifier must never be
+	// dropped: rejecting a CRITICAL run is not a sign-off, it is a human
+	// saying no to a dangerous change, which this project wants recorded,
+	// not blocked. This is the only critical prohibition in the codebase -
+	// decide() returning "block" for CRITICAL has no other enforcement point
+	// anywhere else. If this check is ever "simplified" by dropping the
+	// decision guard, or deleted because it looks redundant with
+	// applyApprovalDecision above, nothing stops a critical run from being
+	// approved.
 	if (decision === "approved" && decide(verdict.name, level) === "block") {
 		throw new Error(`run ${runId} is CRITICAL risk and cannot be approved - the change must be reduced, not signed off`);
 	}
+
+	// The load-bearing check of the whole project, moved here (rather than
+	// living beside the gate in a struct a caller supplies) so that
+	// bypassing it means not calling approveRun/rejectRun at all, not
+	// calling them with a convenient Actor literal. Bound to this specific
+	// run, decision, verdict and risk level: a typed "yes" captured once is
+	// not a reusable capability that authorises any other decision.
+	await requireTypedConfirmation(runId, decision, verdict.name, level);
 
 	const approval: Approval = {
 		runId,
@@ -151,29 +143,109 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 		level,
 	};
 
-	// The event log is the source of truth, so it is written first: if this
-	// fails, nothing else has happened yet and a retry starts clean. If it
-	// succeeds but the file write below does not, the run is left exactly in
-	// the "healing" state handled above, not in an unrecoverable one.
-	if (!healing) {
-		await appendEvent(rptDir, runId, {
-			ts: approval.at,
-			source: "rpt",
-			kind: decision === "approved" ? "ApprovalGranted" : "ApprovalDenied",
-			payload: { by: approval.by, override: approval.override, level, verdictName: verdict.name },
-		});
+	// The event log is the source of truth, so it is appended first - and
+	// the read that checks no approval/rejection already exists, and the
+	// append itself, happen under one held lock (appendEventIfNoneOfKind),
+	// so two concurrent callers cannot both observe "not yet decided" and
+	// both append. Losing that race here (conflicting !== null) means
+	// someone else recorded a decision in the time between this call's own
+	// earlier checks and this append; refuse rather than also writing a
+	// second file over what just became the real record.
+	const result = await appendEventIfNoneOfKind(rptDir, runId, APPROVAL_EVENT_KINDS, {
+		ts: approval.at,
+		source: "rpt",
+		kind: decision === "approved" ? "ApprovalGranted" : "ApprovalDenied",
+		payload: { by: approval.by, override: approval.override, level, verdictName: verdict.name },
+	});
+	if (result.appended === null) {
+		throw new Error(`run ${runId} already has a recorded decision`);
 	}
+
 	await writeApproval(rptDir, approval);
 	await upsertRun(rptDir, { id: runId, task: run.task, state: outcomeState, startedAt: run.startedAt, endedAt: run.endedAt });
 	return approval;
 }
 
+async function approvalFromRecordedEvent(rptDir: string, runId: RunId, decision: ApprovalDecision): Promise<Approval> {
+	const { events } = await readEvents(rptDir, runId);
+	const kind = decision === "approved" ? "ApprovalGranted" : "ApprovalDenied";
+	const recorded = events.find((event) => event.kind === kind);
+	if (recorded === undefined) {
+		throw new Error(`run ${runId} appears already ${decision} but no ${kind} event could be found to heal from`);
+	}
+	return approvalFromEventPayload(runId, decision, recorded);
+}
+
+function approvalFromEventPayload(runId: RunId, decision: ApprovalDecision, event: AgentEvent): Approval {
+	const by = typeof event.payload.by === "string" ? event.payload.by : null;
+	const level = riskLevelOf(event.payload.level);
+	if (by === null || !isValidApproverName(by) || level === null) {
+		throw new Error(`run ${runId} has a recorded ${event.kind} event whose payload cannot be healed from`);
+	}
+	return { runId, decision, by, at: event.ts, override: Boolean(event.payload.override), level };
+}
+
+function riskLevelOf(value: unknown): RiskLevel | null {
+	return (RISK_LEVELS as readonly unknown[]).includes(value) ? (value as RiskLevel) : null;
+}
+
+// Compares this run's config snapshot against a live read taken right now,
+// so an edit timed for after the snapshot - including one that never
+// appears in the sealed diff at all - still shows up as drift rather than
+// being invisible to both the gate and the risk rule that scores it. A live
+// read that fails outright (rpt.config.json now unreadable or invalid) is
+// treated as drift too: an unreadable config is not evidence nothing
+// changed, and erring toward flagging risk is this project's accepted
+// direction to be wrong in.
+async function hasConfigDrifted(repoRoot: string, snapshot: RptConfig): Promise<boolean> {
+	let live: RptConfig;
+	try {
+		live = await loadConfig(repoRoot);
+	} catch {
+		return true;
+	}
+	return JSON.stringify(live) !== JSON.stringify(snapshot);
+}
+
+async function requireTypedConfirmation(runId: RunId, decision: ApprovalDecision, verdictName: VerdictName, level: RiskLevel): Promise<void> {
+	const phrase = confirmationPhrase(runId, decision, verdictName, level);
+	const prompt = `rpt: type "${phrase}" at this terminal to confirm ${decisionVerb(decision)} run ${runId}: `;
+	let typed: string;
+	try {
+		typed = await readFromControllingTerminal(prompt);
+	} catch (error) {
+		throw new Error(
+			`approval requires a confirmation typed at the controlling terminal, which could not be opened: ${errorMessage(error)}`,
+		);
+	}
+	if (typed.trim() !== phrase) {
+		throw new Error(`typed confirmation did not match this decision - refusing to record it`);
+	}
+}
+
+// Exported so tests can compute the exact phrase a given decision requires,
+// rather than either hard-coding the production format string a second time
+// or (worse) mocking the confirmation to always succeed regardless of what
+// was asked. Binding every field into the phrase - not just the run id - is
+// what makes a captured confirmation unreusable against a different
+// decision, verdict or risk level for the same run.
+export function confirmationPhrase(runId: RunId, decision: ApprovalDecision, verdictName: VerdictName, level: RiskLevel): string {
+	return `${decision} run ${runId} verdict ${verdictName} risk ${level}`;
+}
+
+function decisionVerb(decision: ApprovalDecision): string {
+	return decision === "approved" ? "approving" : "rejecting";
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 // Two independent conditions, both required - a terminal check alone is
 // defeated by an agent that has one; an agent-context check alone is
-// defeated by an agent whose environment does not advertise itself.
-// agentContext is now tri-state (see the type above): "unknown" refuses
-// exactly like "agent" does, so a silent environment is never read as proof
-// of a human.
+// defeated by an agent whose environment does not advertise itself. This is
+// the cheap pre-check only: see record()'s mandatory typed confirmation for
+// what actually proves a human is present.
 function assertHuman(actor: Actor): void {
 	if (actor.agentContext === "agent") {
 		throw new Error("approval must come from a human, and this process is running inside a known agent context");

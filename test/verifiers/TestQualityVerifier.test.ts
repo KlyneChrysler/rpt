@@ -138,6 +138,35 @@ describe("testQualityVerifier", () => {
 		expect(result.reason).toMatch(/coverage/i);
 	});
 
+	it("scores only the instrumented lines: unrecorded lines count toward neither side of the fraction", async () => {
+		// auth.ts changes 5 lines. The lcov report has no DA: record at all for
+		// lines 4 and 5 - as a real coverage tool would for blank lines, an
+		// import, or a type-only line - so those two must be excluded from both
+		// the numerator and the denominator, not folded in as uncovered. Of the
+		// three lines the tool did instrument, two ran and one did not: 2/3.
+		const repo = await makeFixtureRepo();
+		const baseSha = await createSnapshot(repo, 1, "base");
+		await writeFile(join(repo, "auth.ts"), "a\nb\nc\nd\ne\n");
+		const endSha = await createSnapshot(repo, 1, "end");
+		const lcov = ["SF:auth.ts", "DA:1,1", "DA:2,0", "DA:3,1", "end_of_record"].join("\n");
+		await mkdir(join(repo, "coverage"), { recursive: true });
+		await writeFile(join(repo, "coverage", "lcov.info"), lcov);
+
+		const context: RunContext = {
+			repoRoot: repo,
+			worktree: repo,
+			baseSha,
+			endSha,
+			config: { ...DEFAULT_CONFIG, coverageCommand: "true" },
+			claims: { mutatedPaths: ["auth.ts"], commands: [] },
+		};
+		const result = await testQualityVerifier.run(context);
+		expect(result.facts.changedLineCount).toBe(3);
+		expect(result.facts.coveredLineCount).toBe(2);
+		expect(result.facts.uninstrumentedLineCount).toBe(2);
+		expect(result.facts.changeCoverage).toBeCloseTo(2 / 3, 5);
+	});
+
 	it("skips with a reason naming node_modules when the main checkout has none to link", async () => {
 		const context = await nodeProjectContext({ repoHasNodeModules: false, coverageCommand: "true" });
 		const result = await testQualityVerifier.run(context);

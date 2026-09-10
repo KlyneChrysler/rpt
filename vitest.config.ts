@@ -5,6 +5,11 @@ export default defineConfig({
 		include: ["test/**/*.test.ts"],
 		coverage: {
 			provider: "v8",
+			// v8's default reporter set ("text", "html", "clover", "json") never
+			// includes lcov, so "pnpm test:cov" produced no coverage/lcov.info -
+			// the exact file TestQualityVerifier reads. Without "lcov" here,
+			// configuring rpt to verify this repository's own runs always skips.
+			reporter: ["text", "lcov"],
 			thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 },
 			exclude: ["dist/**", "test/**", "*.config.ts"],
 		},

@@ -129,10 +129,17 @@ function socketAccepts(socketPath: string): Promise<boolean> {
 		const settle = (accepted: boolean): void => {
 			if (settled) return;
 			settled = true;
+			clearTimeout(timer);
 			socket.destroy();
 			resolve(accepted);
 		};
-		socket.setTimeout(SOCKET_PROBE_MS, () => settle(false));
+		// An explicit timer, not socket.setTimeout: that one is an idle timeout
+		// and does not reliably bound a connect that never completes. Connecting
+		// to a unix socket whose file is gone errors at once, so this went
+		// unnoticed until Windows, where connecting to a named pipe that no
+		// longer exists simply waits - and `rpt doctor`, whose whole job is
+		// answering questions about a possibly-dead daemon, hung.
+		const timer = setTimeout(() => settle(false), SOCKET_PROBE_MS);
 		socket.on("error", () => settle(false));
 		socket.on("connect", () => settle(true));
 	});

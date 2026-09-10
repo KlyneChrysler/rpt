@@ -10,6 +10,12 @@ export default defineConfig({
 		// collector daemon that outlives the run. One test deliberately turns
 		// this back off to exercise the auto-start path for real.
 		setupFiles: ["test/support/setup.ts"],
+		// Most of this suite is integration work: it creates git repositories,
+		// takes snapshots, opens detached worktrees and runs test commands in
+		// them. Five seconds is a unit-test default and it made several of those
+		// suites flaky on the slowest CI runner rather than failing honestly.
+		testTimeout: 30_000,
+		hookTimeout: 120_000,
 		coverage: {
 			provider: "v8",
 			// v8's default reporter set ("text", "html", "clover", "json") never

@@ -1,5 +1,7 @@
+import type { ApprovalDecision } from "./approval.js";
 import type { AgentEvent, RunId } from "./events.js";
 import { transition, type RunState } from "./state.js";
+import type { VerdictName } from "./verdict.js";
 
 export type ModelUsage = {
 	model: string;
@@ -87,9 +89,36 @@ function apply(run: AgentRun, event: AgentEvent): AgentRun {
 				endedAt: event.ts,
 				endSha: asStringOrNull(event.payload.endSha),
 			};
+		case "ApprovalGranted":
+			return { ...run, state: applyApprovalDecision(run.state, verdictNameOf(event.payload), "approved") };
+		case "ApprovalDenied":
+			return { ...run, state: applyApprovalDecision(run.state, verdictNameOf(event.payload), "rejected") };
 		default:
 			return run;
 	}
+}
+
+// Shared with src/app/approveRun.ts, which calls this directly to decide
+// whether a fresh approval is even legal before it writes anything, and by
+// the reducer above, which replays that same edge when folding the event
+// log. An approval or rejection only ever legitimately follows a verdict, by
+// way of AWAITING_APPROVAL, so this walks that two-edge chain once rather
+// than each caller re-deriving it - and, being routed through transition(),
+// it throws for a run that is not eligible: never verified, already decided
+// (even with the same outcome), or already recorded. That is what makes the
+// projection recoverable: rebuilding the index by replaying the event log
+// reaches the same approved or rejected state the cache was told directly,
+// instead of silently losing it.
+export function applyApprovalDecision(state: RunState, verdictName: VerdictName, decision: ApprovalDecision): RunState {
+	const verified = transition(state, verdictName);
+	const awaiting = transition(verified, "AWAITING_APPROVAL");
+	return transition(awaiting, decision === "approved" ? "APPROVED" : "REJECTED");
+}
+
+function verdictNameOf(payload: Record<string, unknown>): VerdictName {
+	const value = payload.verdictName;
+	if (value === "VERIFIED" || value === "FAILED" || value === "UNVERIFIED") return value;
+	throw new Error(`approval event carries an unrecognised verdict name: ${JSON.stringify(value)}`);
 }
 
 function withPath(claims: Claims, path: string): Claims {

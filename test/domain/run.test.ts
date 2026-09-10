@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, DraftEvent } from "../../src/domain/events.js";
-import { projectRun } from "../../src/domain/run.js";
+import { applyApprovalDecision, projectRun } from "../../src/domain/run.js";
 
 function log(...drafts: DraftEvent[]): AgentEvent[] {
 	return drafts.map((draft, seq) => ({ ...draft, runId: 1, seq }));
@@ -77,6 +77,71 @@ describe("projectRun", () => {
 			),
 		);
 		expect(run.claims.commands).toEqual(["npm test", "npm test"]);
+	});
+});
+
+// Regression coverage for a real defect: before this, ApprovalGranted and
+// ApprovalDenied fell through the reducer's default case, so replaying the
+// event log - the documented recovery path for a damaged index - lost every
+// approval. The index cache was the only place an approval was ever visible.
+describe("projectRun folds approval events", () => {
+	function verifyingRun(...tail: DraftEvent[]): AgentEvent[] {
+		return log(
+			draft("RunStarted", { task: "t", baseSha: "abc" }),
+			draft("AgentStopped", { endSha: "def" }),
+			draft("VerificationStarted", {}),
+			...tail,
+		);
+	}
+
+	it("moves to APPROVED, through AWAITING_APPROVAL, on an ApprovalGranted event", () => {
+		const run = projectRun(1, verifyingRun(draft("ApprovalGranted", { verdictName: "VERIFIED" })));
+		expect(run.state).toBe("APPROVED");
+	});
+
+	it("moves to REJECTED on an ApprovalDenied event", () => {
+		const run = projectRun(1, verifyingRun(draft("ApprovalDenied", { verdictName: "FAILED" })));
+		expect(run.state).toBe("REJECTED");
+	});
+
+	it("throws when an approval event carries an unrecognised verdict name", () => {
+		expect(() => projectRun(1, verifyingRun(draft("ApprovalGranted", { verdictName: "NONSENSE" })))).toThrow(
+			/verdict name/i,
+		);
+	});
+
+	it("throws replaying a second approval event for a run already decided", () => {
+		expect(() =>
+			projectRun(
+				1,
+				verifyingRun(
+					draft("ApprovalGranted", { verdictName: "VERIFIED" }),
+					draft("ApprovalGranted", { verdictName: "VERIFIED" }),
+				),
+			),
+		).toThrow();
+	});
+});
+
+describe("applyApprovalDecision", () => {
+	it("walks VERIFYING through the verdict and AWAITING_APPROVAL to APPROVED", () => {
+		expect(applyApprovalDecision("VERIFYING", "VERIFIED", "approved")).toBe("APPROVED");
+	});
+
+	it("walks a failed verdict to REJECTED", () => {
+		expect(applyApprovalDecision("VERIFYING", "FAILED", "rejected")).toBe("REJECTED");
+	});
+
+	it("refuses a run that has not reached VERIFYING", () => {
+		expect(() => applyApprovalDecision("ENDED", "VERIFIED", "approved")).toThrow();
+	});
+
+	it("refuses a run that is already recorded", () => {
+		expect(() => applyApprovalDecision("RECORDED", "VERIFIED", "approved")).toThrow();
+	});
+
+	it("refuses re-approving a run that is already approved", () => {
+		expect(() => applyApprovalDecision("APPROVED", "VERIFIED", "approved")).toThrow();
 	});
 });
 

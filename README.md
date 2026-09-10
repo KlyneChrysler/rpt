@@ -223,3 +223,48 @@ type AgentRun = {
 `claims` is what the agent said. `baseSha`/`endSha` are what you hand to
 `git diff` to find out what actually happened. rpt keeps those two things separate
 on purpose - collapsing them into one would defeat the reason this tool exists.
+
+## Threat model
+
+Say this plainly, without hedging: rpt is a check against agent error, drift, and
+unverified work. It is not a check against an agent that is deliberately attacking
+rpt itself.
+
+Every record rpt keeps - the event log, the verdict, the risk assessment, the
+approval - lives in `.rpt/` inside the repository the agent is working in. An agent
+with write access to that repository has write access to every one of those files,
+the same as any other file it can edit. Nothing in rpt's design changes that: no
+local tool can defend a record against an adversary who can write to the filesystem
+that record lives on. A checksum chained over events verified by the same machine
+running the agent is a speed bump against an accidental or careless write, not a
+defence against a deliberate one - the machine that could forge the write can just
+as easily recompute the chain over the forgery.
+
+Concretely, none of the following require exploiting a bug: an agent can write
+`.rpt/runs/<id>/approval.json` directly, in the exact shape a real approval takes,
+without ever calling `approveRun`. It can construct an `Actor` value in-process with
+`interactive: true, agentContext: "human"` and pass it straight to `approveRun`,
+bypassing `actorFromEnvironment` and the terminal confirmation it requires. It can
+run inside a pseudo-terminal it fully controls (`script`, `expect`, a harness that
+gives it raw shell access), which can make both `isTTY` checks and a typed
+confirmation at `/dev/tty` succeed with no human ever involved, if the agent is
+willing to script that impersonation. None of these are exotic: they are what "has
+write access to the repository and can spawn processes" already grants.
+
+What rpt's human-only check (`assertHuman` in `src/app/approveRun.ts`) actually
+raises is the cost of an *unintentional* or *incidental* bypass - an agent whose
+environment happens to look interactive, or whose context marker happens to be
+unset, no longer passes by accident. It requires two independent signals
+(a real terminal, and a definite absence of a known agent context) and a value
+typed at the controlling terminal rather than standard input, so redirecting or
+piping stdin does not satisfy it for free. That is real, useful hardening against
+carelessness and against tooling that was never trying to defeat the check. It is
+not, and does not claim to be, a defence against an agent actively trying to.
+
+If you need a guarantee that survives a hostile agent with repository write access,
+it has to come from outside this repository entirely: a review gate the agent
+cannot write to (a branch protection rule enforced by a server the agent has no
+credentials for, a human approval step in a CI system, a signature the agent cannot
+produce). rpt's job ends at making the agent's own claims checkable and making the
+one place a human decision is recorded resistant to accidental self-clearing - not
+at defending that record against an agent that has decided to attack it.

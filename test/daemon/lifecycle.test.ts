@@ -141,13 +141,14 @@ describe("ensureDaemon, from the built package", () => {
 			expect(await built.ensureDaemon(dir)).toBe("already-running");
 		} finally {
 			process.env.RPT_NO_DAEMON = "1";
-			const { rm } = await import("node:fs/promises");
-			// The child was detached and unref'd on purpose, so there is no pid
-			// to kill here. Removing the socket is what a supervisor would do;
-			// the daemon then idles out, and the lock it leaves goes stale
-			// rather than blocking the next one - the same recovery path a
-			// killed daemon leaves behind in production.
-			await rm(socketPathOf(dir), { force: true });
+			// The child was detached and unref'd on purpose, so there is no pid to
+			// kill here. Removing the address is what a supervisor would do, and
+			// it goes through the store rather than a raw unlink because a
+			// Windows named pipe is not a file: unlinking its name throws EINVAL,
+			// which is precisely why the production path guards it too. Where the
+			// address is a pipe this is a no-op and the daemon idles out instead.
+			const { removeSocketPath } = await import("../../src/store/daemonSocket.js");
+			await removeSocketPath(dir);
 		}
 	});
 });

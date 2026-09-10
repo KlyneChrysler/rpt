@@ -1,14 +1,10 @@
 import type { RptConfig } from "../config/schema.js";
 import type { Claims } from "../domain/run.js";
+import type { VerifierResult } from "../domain/verifierResult.js";
 
-export type VerifierStatus = "passed" | "failed" | "skipped";
-
-export type VerifierResult = {
-	id: string;
-	status: VerifierStatus;
-	reason: string | null;
-	facts: Record<string, unknown>;
-};
+// The verdict rule in src/domain/verdict.ts owns this type; re-exported here
+// so every verifier's existing `from "./Verifier.js"` import keeps working.
+export type { VerifierResult, VerifierStatus } from "../domain/verifierResult.js";
 
 export type RunContext = {
 	repoRoot: string;

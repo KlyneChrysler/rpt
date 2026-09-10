@@ -21,6 +21,10 @@ export function eventLogOf(rptDir: string, runId: RunId): string {
 	return join(runDirOf(rptDir, runId), "events.jsonl");
 }
 
+export function verdictPathOf(rptDir: string, runId: RunId): string {
+	return join(runDirOf(rptDir, runId), "verdict.json");
+}
+
 export function currentPointerOf(rptDir: string): string {
 	return join(rptDir, "current");
 }

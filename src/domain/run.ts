@@ -76,6 +76,10 @@ function apply(run: AgentRun, event: AgentEvent): AgentRun {
 			return { ...run, usage: [...run.usage, readUsage(event.payload)] };
 		case "GapRecorded":
 			return { ...run, hasGaps: true };
+		case "VerificationStarted":
+			return { ...run, state: transition(run.state, "VERIFYING") };
+		case "VerifierCompleted":
+			return run;
 		case "AgentStopped":
 			return {
 				...run,

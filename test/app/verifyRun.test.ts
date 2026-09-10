@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { initRepo } from "../../src/app/initRepo.js";
 import { loadRun } from "../../src/app/loadRun.js";
 import { disposeQuietly, readVerdict, verifyRun } from "../../src/app/verifyRun.js";
-import { rptDirOf, runConfigPathOf } from "../../src/store/paths.js";
+import { rptDirOf } from "../../src/store/paths.js";
 import { driveFakeAgent } from "../support/fakeAgent.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
@@ -130,15 +130,25 @@ describe("verifyRun", () => {
 
 	it("propagates the real failure rather than a worktree disposal failure, and still disposes the worktree", async () => {
 		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
-		// Corrupts the run's own config *snapshot* after the run ended, so
-		// verifyRun's own read of it (inside the try block, after the worktree
-		// is already open) is what fails - not something earlier that would
-		// never reach the disposal guard at all. Corrupting the live
-		// rpt.config.json here would no longer do it: verifyRun now reads the
-		// snapshot taken at run start, not a live read, which is the whole
-		// point of the snapshot.
-		await writeFile(runConfigPathOf(rptDirOf(repo), 1), "{ not json");
-		await expect(verifyRun(repo, 1)).rejects.toThrow(/config snapshot for run 1 is not valid JSON/);
+		// Forces a real failure *inside* the try block, after the worktree is
+		// already open, by making the VerifierCompleted append (not the
+		// VerificationStarted one that precedes openWorktree) fail. A corrupt
+		// config snapshot used to serve this purpose, but resolveRunConfig no
+		// longer ever throws for one (see src/app/loadRunConfig.ts - a corrupt
+		// or missing snapshot is handled as forced drift, not a permanent
+		// refusal), so this test needs its own, independent way to trigger a
+		// failure at the same point in the control flow.
+		const eventLogModule = await import("../../src/store/eventLog.js");
+		const realAppendEvent = eventLogModule.appendEvent;
+		const spy = vi.spyOn(eventLogModule, "appendEvent").mockImplementation(async (rptDir, id, draft) => {
+			if (draft.kind === "VerifierCompleted") throw new Error("simulated append failure after the worktree opened");
+			return realAppendEvent(rptDir, id, draft);
+		});
+		try {
+			await expect(verifyRun(repo, 1)).rejects.toThrow(/simulated append failure/);
+		} finally {
+			spy.mockRestore();
+		}
 		const { git } = await import("../../src/git/exec.js");
 		expect(await git(repo, ["worktree", "list"])).not.toContain("rpt-wt-");
 	});

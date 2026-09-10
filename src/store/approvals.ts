@@ -36,15 +36,28 @@ export class InvalidApprovalError extends Error {
 	}
 }
 
+// Validated against the same schema readApproval enforces before a byte is
+// written, not only when read back: a caller constructing an Approval from
+// something other than a fresh assessment (src/app/approveRun.ts's
+// healApproval, reconstructing one from a recorded event) could otherwise
+// write a record - a malformed timestamp, say - that this file would then
+// permanently refuse to read, with no repair path, the moment anything
+// asked for it again. Refusing at write time instead means the bad data
+// never reaches disk.
+//
 // Written via a temporary file and a rename rather than a direct write, so a
 // crash mid-write never leaves a torn or half-written approval.json for
 // readApproval to trip over - the file either does not exist yet or exists
 // complete. rename() is atomic on the same filesystem, which the temp file
 // (created alongside the real path) guarantees it is on.
 export async function writeApproval(rptDir: string, approval: Approval): Promise<void> {
+	const validated = approvalSchema.safeParse(approval);
+	if (!validated.success) {
+		throw new InvalidApprovalError(approval.runId, validated.error.issues.map((issue) => issue.message).join("; "));
+	}
 	const path = approvalPathOf(rptDir, approval.runId);
 	const tmpPath = `${path}.tmp-${randomUUID()}`;
-	await writeFile(tmpPath, `${JSON.stringify(approval, null, 2)}\n`, "utf8");
+	await writeFile(tmpPath, `${JSON.stringify(validated.data, null, 2)}\n`, "utf8");
 	await rename(tmpPath, path);
 }
 

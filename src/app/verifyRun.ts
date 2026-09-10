@@ -13,7 +13,7 @@ import { testQualityVerifier } from "../verifiers/TestQualityVerifier.js";
 import { testVerifier } from "../verifiers/TestVerifier.js";
 import { runVerifiers, type RunContext } from "../verifiers/Verifier.js";
 import { loadRun } from "./loadRun.js";
-import { loadRunConfig } from "./loadRunConfig.js";
+import { resolveRunConfig } from "./loadRunConfig.js";
 
 const VERIFIERS = [testVerifier, diffIntegrityVerifier, securityVerifier, testQualityVerifier];
 
@@ -74,8 +74,9 @@ export async function verifyRun(repoRoot: string, runId: RunId): Promise<Verdict
 			baseSha: run.baseSha,
 			endSha: run.endSha,
 			// The config snapshotted at this run's start, not a live read - see
-			// src/app/loadRunConfig.ts.
-			config: await loadRunConfig(repoRoot, runId),
+			// src/app/loadRunConfig.ts. Verification does not need the drift flag
+			// that comes back alongside it (that only feeds the risk engine).
+			config: (await resolveRunConfig(repoRoot, run)).config,
 			claims: run.claims,
 		};
 		const results = await runVerifiers(VERIFIERS, context);

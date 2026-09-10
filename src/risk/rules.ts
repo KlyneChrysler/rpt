@@ -21,6 +21,30 @@ function hasCategory(facts: RunFacts, category: string): boolean {
 	return facts.sensitiveMatches.some((match) => match.category === category);
 }
 
+function coverageWasMeasured(facts: RunFacts): boolean {
+	return facts.changeCoverageLinesMeasured >= MIN_MEASURED_LINES_FOR_COVERAGE_CREDIT;
+}
+
+function coverageIsHigh(facts: RunFacts): boolean {
+	return (facts.changeCoverage ?? 0) > 0.8;
+}
+
+// A test file existing is weak evidence on its own - nothing checks that it
+// asserts anything or exercises the change at all, so an agent could add one
+// trivial test file and take ten points off an otherwise risky change. When
+// coverage of the changed lines was actually measured (using the same floor
+// as coverage-high, so the two rules agree on what a real measurement is),
+// that direct evidence overrides the weak signal: a real, low measured
+// number withholds the credit a trivial test file would otherwise buy. When
+// coverage was not measured at all, or was measured too thinly to trust,
+// there is no direct evidence to contradict testsAdded with, so the credit
+// still stands rather than punishing a project with no coverage tooling.
+function testsAddedWithoutContradictingCoverage(facts: RunFacts): boolean {
+	if (facts.testsAdded <= 0) return false;
+	if (!coverageWasMeasured(facts)) return true;
+	return coverageIsHigh(facts);
+}
+
 export const DEFAULT_RULES: readonly RiskRule[] = [
 	{ id: "sensitive-auth", label: "Authentication or authorization paths modified", points: 25, when: (facts) => hasCategory(facts, "auth") },
 	{ id: "sensitive-database", label: "Database access or migration paths modified", points: 20, when: (facts) => hasCategory(facts, "database") },
@@ -32,13 +56,13 @@ export const DEFAULT_RULES: readonly RiskRule[] = [
 	{ id: "scan-findings", label: "Security scan produced findings", points: 25, when: (facts) => facts.scanResult === "findings" },
 	{ id: "scan-skipped", label: "Security scan skipped", points: 10, when: (facts) => facts.scanResult === "skipped" },
 	{ id: "tests-unknown-or-failing", label: "Test result unknown or failing", points: 15, when: (facts) => facts.testResult !== "passed" },
-	{ id: "tests-added", label: "Regression tests added", points: -10, when: (facts) => facts.testsAdded > 0 },
+	{ id: "tests-added", label: "Regression tests added", points: -10, when: testsAddedWithoutContradictingCoverage },
 	{ id: "tests-passed", label: "All tests passed", points: -5, when: (facts) => facts.testResult === "passed" },
 	{ id: "scan-clean", label: "Security scan clean", points: -10, when: (facts) => facts.scanResult === "clean" },
 	{
 		id: "coverage-high",
 		label: "Change coverage above eighty percent",
 		points: -5,
-		when: (facts) => facts.changeCoverageLinesMeasured >= MIN_MEASURED_LINES_FOR_COVERAGE_CREDIT && (facts.changeCoverage ?? 0) > 0.8,
+		when: (facts) => coverageWasMeasured(facts) && coverageIsHigh(facts),
 	},
 ];

@@ -63,6 +63,9 @@ describe("assessRisk", () => {
 	});
 
 	it("credits added regression tests", () => {
+		// clean's coverage (measured 20, fraction 1) is high, so it does not
+		// contradict the credit - see the "tests-added credit" describe block
+		// below for the cases where measured coverage does contradict it.
 		const assessment = assessRisk(facts({ testsAdded: 2 }), DEFAULT_CONFIG);
 		expect(assessment.contributions.find((entry) => entry.id === "tests-added")?.points).toBe(-10);
 	});
@@ -134,6 +137,38 @@ describe("assessRisk", () => {
 				DEFAULT_CONFIG,
 			);
 			expect(assessment.contributions.find((entry) => entry.id === "coverage-high")).toBeUndefined();
+		});
+	});
+
+	describe("tests-added credit versus measured coverage", () => {
+		// A test file existing is weak evidence on its own: nothing checks it
+		// asserts anything or exercises the change at all, so a trivial test
+		// file could otherwise buy ten points off a genuinely risky change.
+		// Real measured coverage is strong evidence and must be able to
+		// contradict that weak signal - but only when it was actually measured
+		// widely enough to trust (the same floor coverage-high uses).
+		it("keeps the credit when coverage was never measured", () => {
+			const assessment = assessRisk(
+				facts({ testsAdded: 1, changeCoverage: null, changeCoverageLinesMeasured: 0, changeCoverageLinesCovered: 0 }),
+				DEFAULT_CONFIG,
+			);
+			expect(assessment.contributions.find((entry) => entry.id === "tests-added")?.points).toBe(-10);
+		});
+
+		it("keeps the credit when coverage was measured and came back high", () => {
+			const assessment = assessRisk(
+				facts({ testsAdded: 1, changeCoverage: 1, changeCoverageLinesMeasured: 10, changeCoverageLinesCovered: 10 }),
+				DEFAULT_CONFIG,
+			);
+			expect(assessment.contributions.find((entry) => entry.id === "tests-added")?.points).toBe(-10);
+		});
+
+		it("withholds the credit when coverage was measured and came back poor", () => {
+			const assessment = assessRisk(
+				facts({ testsAdded: 1, changeCoverage: 0.2, changeCoverageLinesMeasured: 50, changeCoverageLinesCovered: 10 }),
+				DEFAULT_CONFIG,
+			);
+			expect(assessment.contributions.find((entry) => entry.id === "tests-added")).toBeUndefined();
 		});
 	});
 });

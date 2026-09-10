@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { findGitRoot, findRepoRoot } from "../../src/store/paths.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { findGitRoot, findRepoRoot, socketPathOf } from "../../src/store/paths.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
 describe("findGitRoot", () => {
@@ -44,5 +44,43 @@ describe("findRepoRoot", () => {
 
 	it("is null when neither marker is anywhere above", async () => {
 		expect(await findRepoRoot(await mkdtemp(join(tmpdir(), "rpt-bare-")))).toBeNull();
+	});
+});
+
+// process.platform is read at call time, so the win32 branch is reachable from
+// a posix test run. Worth asserting rather than assuming: Windows has no unix
+// domain sockets, and a daemon address that is still a filesystem path there is
+// a daemon that can never bind.
+describe("socketPathOf across platforms", () => {
+	const real = process.platform;
+
+	function pretendPlatform(platform: string): void {
+		Object.defineProperty(process, "platform", { value: platform, configurable: true });
+	}
+
+	afterEach(() => {
+		Object.defineProperty(process, "platform", { value: real, configurable: true });
+	});
+
+	it("is a file inside .rpt on posix", () => {
+		pretendPlatform("darwin");
+		expect(socketPathOf("/repo/.rpt")).toBe("/repo/.rpt/daemon.sock");
+	});
+
+	it("is a named pipe on windows, not a path under .rpt", () => {
+		pretendPlatform("win32");
+		const address = socketPathOf("C:\\repo\\.rpt");
+		expect(address.startsWith("\\\\.\\pipe\\rpt-")).toBe(true);
+		expect(address).not.toContain(".rpt");
+	});
+
+	it("gives two repositories two different pipes", () => {
+		pretendPlatform("win32");
+		expect(socketPathOf("C:\\one\\.rpt")).not.toBe(socketPathOf("C:\\two\\.rpt"));
+	});
+
+	it("gives the same repository the same pipe every time", () => {
+		pretendPlatform("win32");
+		expect(socketPathOf("C:\\one\\.rpt")).toBe(socketPathOf("C:\\one\\.rpt"));
 	});
 });

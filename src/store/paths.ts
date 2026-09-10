@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { RunId } from "../domain/events.js";
@@ -63,9 +64,19 @@ export function startFailuresOf(rptDir: string): string {
 	return join(rptDir, "start-failures.jsonl");
 }
 
-// The daemon owns the server; the store owns the file, because the file lives
-// under .rpt and nothing outside this layer may decide where anything there goes.
+// The daemon owns the server; the store owns the address, because on every
+// platform where it is a file that file lives under .rpt and nothing outside
+// this layer may decide where anything there goes.
+//
+// Windows has no unix domain sockets. Node's net module takes a named pipe path
+// instead, which is not a filesystem path at all: it lives in the pipe
+// namespace, cannot be placed inside .rpt, and must be unique per repository.
+// A hash of the directory gives that uniqueness without smuggling a path with
+// backslashes and a drive letter into a pipe name.
 export function socketPathOf(rptDir: string): string {
+	if (process.platform === "win32") {
+		return `\\\\.\\pipe\\rpt-${createHash("sha256").update(rptDir).digest("hex").slice(0, 16)}`;
+	}
 	return join(rptDir, "daemon.sock");
 }
 

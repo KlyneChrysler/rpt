@@ -14,6 +14,15 @@ export function verifyChecksum(stored: StoredEvent): boolean {
 	return checksumOf(event) === checksum;
 }
 
+// Generic canonical-JSON fingerprint, reusing the same key-sorted structural
+// validation sortValue already provides for events, for any other JSON-plain
+// value that needs a stable identity - e.g. the config a risk assessment was
+// computed under (src/app/approveRun.ts), so a later disagreement between two
+// reads of "the same" config is detectable rather than invisible.
+export function fingerprintOf(value: unknown): string {
+	return createHash("sha256").update(JSON.stringify(sortValue(value, ""))).digest("hex");
+}
+
 function sortValue(value: unknown, path: string): unknown {
 	if (value === null) return null;
 	if (typeof value === "boolean") return value;

@@ -7,6 +7,12 @@ import type { RiskLevel } from "./policy.js";
 export const APPROVAL_DECISIONS = ["approved", "rejected"] as const;
 export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
 
+// Structurally identical to src/risk/assess.ts's Contribution, and the
+// canonical declaration of it, the same way RiskLevel is: src/risk/assess.ts
+// imports this type-only rather than domain holding a second, independently
+// maintained copy.
+export type RiskContribution = { id: string; label: string; points: number };
+
 export type Approval = {
 	runId: RunId;
 	decision: ApprovalDecision;
@@ -18,10 +24,18 @@ export type Approval = {
 	// which re-derives this on every read rather than returning whatever a
 	// hand-edited approval.json happens to claim.
 	override: boolean;
-	// The risk level the human was actually shown when they decided, persisted
-	// so a later reader adjudicates against what was granted rather than
-	// re-deriving a level from a config file that may have changed since.
+	// The risk level, score and itemised contributions the human was actually
+	// shown when they decided, persisted so a later reader adjudicates
+	// against what was granted rather than re-deriving a level from a config
+	// file that may have changed since, and so a later disagreement between
+	// what this record claims and what the current risk engine would compute
+	// is detectable (via configFingerprint below) rather than invisible.
 	level: RiskLevel;
+	score: number;
+	contributions: RiskContribution[];
+	// A canonical-JSON fingerprint (see src/domain/checksum.ts's fingerprintOf)
+	// of the exact config snapshot the assessment above was computed under.
+	configFingerprint: string;
 };
 
 const APPROVER_NAME_MAX_LENGTH = 200;

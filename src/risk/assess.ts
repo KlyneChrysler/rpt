@@ -1,15 +1,16 @@
 import type { RptConfig } from "../config/schema.js";
+import type { RiskContribution } from "../domain/approval.js";
 import type { RiskLevel } from "../domain/policy.js";
 import type { RunFacts } from "./facts.js";
 import { DEFAULT_RULES, type RiskRule } from "./rules.js";
 
-// Re-exported so existing and future callers can still pull RiskLevel from
-// this module by name - domain/policy.ts is the one place that declares it
-// now (see the comment there); this is just a value-free re-export, not a
-// second declaration.
+// Re-exported so existing and future callers can still pull RiskLevel and
+// Contribution from this module by name - domain is the one place that
+// declares them now (see the comments in domain/policy.ts and
+// domain/approval.ts); these are value-free re-exports, not second
+// declarations.
 export type { RiskLevel };
-
-export type Contribution = { id: string; label: string; points: number };
+export type Contribution = RiskContribution;
 
 export type RiskAssessment = { score: number; level: RiskLevel; contributions: Contribution[] };
 

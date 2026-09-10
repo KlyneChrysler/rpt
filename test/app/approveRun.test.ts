@@ -38,6 +38,21 @@ beforeEach(() => {
 	});
 });
 
+// A realistic ApprovalGranted/ApprovalDenied event payload, for tests that
+// simulate a prior approval attempt by appending the event directly rather
+// than going through approveRun/rejectRun.
+function approvalEventPayload(overrides: Record<string, unknown>): Record<string, unknown> {
+	return {
+		by: "klyne",
+		override: true,
+		level: "LOW",
+		score: 3,
+		contributions: [{ id: "files-changed-count", label: "Files changed", points: 3 }],
+		configFingerprint: "deadbeef",
+		...overrides,
+	};
+}
+
 async function verifiedRepo(): Promise<string> {
 	const repo = await makeFixtureRepo();
 	await initRepo(repo);
@@ -110,6 +125,19 @@ describe("approveRun", () => {
 		expect(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).toContain(approval.level);
 	});
 
+	// Detectability, not just the level itself: a later reader can recompute
+	// today's risk against this exact config (by fingerprint) and compare it
+	// to what was actually recorded, rather than trusting the level in
+	// isolation with no way to tell if the assessment behind it has since
+	// changed.
+	it("persists the score, the itemised contributions and a config fingerprint alongside the level", async () => {
+		const approval = await approveRun(await verifiedRepo(), 1, human);
+		expect(typeof approval.score).toBe("number");
+		expect(approval.contributions.length).toBeGreaterThan(0);
+		expect(approval.contributions[0]).toEqual(expect.objectContaining({ id: expect.any(String), label: expect.any(String), points: expect.any(Number) }));
+		expect(approval.configFingerprint).toMatch(/^[0-9a-f]{64}$/);
+	});
+
 	it("refuses to approve a run twice", async () => {
 		const repo = await verifiedRepo();
 		await approveRun(repo, 1, human);
@@ -162,7 +190,7 @@ describe("approveRun", () => {
 			ts: new Date().toISOString(),
 			source: "rpt",
 			kind: "ApprovalGranted",
-			payload: { by: "klyne", override: true, level: "LOW", verdictName: verdict?.name },
+			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
 		});
 		const approval = await approveRun(repo, 1, human);
 		expect(approval.decision).toBe("approved");
@@ -176,13 +204,16 @@ describe("approveRun", () => {
 			ts: "2020-01-01T00:00:00.000Z",
 			source: "rpt",
 			kind: "ApprovalGranted",
-			payload: { by: "the-original-approver", override: true, level: "LOW", verdictName: verdict?.name },
+			payload: approvalEventPayload({ by: "the-original-approver", verdictName: verdict?.name }),
 		});
 		// A different human retries the interrupted write.
 		const retryer: Actor = { name: "someone-else", interactive: true, agentContext: "human" };
 		const approval = await approveRun(repo, 1, retryer);
 		expect(approval.by).toBe("the-original-approver");
 		expect(approval.at).toBe("2020-01-01T00:00:00.000Z");
+		expect(approval.score).toBe(3);
+		expect(approval.contributions).toEqual([{ id: "files-changed-count", label: "Files changed", points: 3 }]);
+		expect(approval.configFingerprint).toBe("deadbeef");
 		// The mandatory confirmation must not even be asked on a heal - it
 		// already ran when the event was written.
 		expect(readFromControllingTerminal).not.toHaveBeenCalled();
@@ -210,7 +241,7 @@ describe("approveRun", () => {
 			ts: new Date().toISOString(),
 			source: "rpt",
 			kind: "ApprovalGranted",
-			payload: { by: "klyne", override: true, level: "LOW", verdictName: verdict?.name },
+			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
 		});
 		await expect(rejectRun(repo, 1, human)).rejects.toThrow();
 	});
@@ -277,6 +308,9 @@ describe("readApproval", () => {
 			at: "2026-09-10T10:00:00.000Z",
 			override: false,
 			level: "LOW",
+			score: 3,
+			contributions: [{ id: "files-changed-count", label: "Files changed", points: 3 }],
+			configFingerprint: "deadbeef",
 		});
 		await expect(readApproval(repo, 1)).rejects.toThrow(/verdict/i);
 	});

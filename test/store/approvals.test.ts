@@ -16,6 +16,9 @@ function approval(overrides: Partial<Approval> = {}): Approval {
 		at: "2026-09-10T10:00:00.000Z",
 		override: false,
 		level: "LOW",
+		score: 3,
+		contributions: [{ id: "files-changed-count", label: "Files changed", points: 3 }],
+		configFingerprint: "deadbeef",
 		...overrides,
 	};
 }

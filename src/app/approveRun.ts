@@ -1,6 +1,7 @@
 import { loadConfig } from "../config/load.js";
 import type { RptConfig } from "../config/schema.js";
-import { isValidApproverName, type Approval, type ApprovalDecision } from "../domain/approval.js";
+import { fingerprintOf } from "../domain/checksum.js";
+import { isValidApproverName, type Approval, type ApprovalDecision, type RiskContribution } from "../domain/approval.js";
 import type { AgentEvent, EventKind, RunId } from "../domain/events.js";
 import { decide, RISK_LEVELS, type RiskLevel } from "../domain/policy.js";
 import { applyApprovalDecision } from "../domain/run.js";
@@ -111,7 +112,8 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 
 	const snapshot = await loadRunConfig(repoRoot, runId);
 	const configChangedSinceSnapshot = await hasConfigDrifted(repoRoot, snapshot);
-	const { level } = assessRisk(buildFacts(verdict.results, snapshot, configChangedSinceSnapshot), snapshot);
+	const { level, score, contributions } = assessRisk(buildFacts(verdict.results, snapshot, configChangedSinceSnapshot), snapshot);
+	const configFingerprint = fingerprintOf(snapshot);
 
 	// Gated on decision === "approved" only, and that qualifier must never be
 	// dropped: rejecting a CRITICAL run is not a sign-off, it is a human
@@ -141,6 +143,9 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 		at: new Date().toISOString(),
 		override: verdict.name !== "VERIFIED",
 		level,
+		score,
+		contributions,
+		configFingerprint,
 	};
 
 	// The event log is the source of truth, so it is appended first - and
@@ -155,7 +160,15 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 		ts: approval.at,
 		source: "rpt",
 		kind: decision === "approved" ? "ApprovalGranted" : "ApprovalDenied",
-		payload: { by: approval.by, override: approval.override, level, verdictName: verdict.name },
+		payload: {
+			by: approval.by,
+			override: approval.override,
+			level,
+			score,
+			contributions,
+			configFingerprint,
+			verdictName: verdict.name,
+		},
 	});
 	if (result.appended === null) {
 		throw new Error(`run ${runId} already has a recorded decision`);
@@ -179,14 +192,29 @@ async function approvalFromRecordedEvent(rptDir: string, runId: RunId, decision:
 function approvalFromEventPayload(runId: RunId, decision: ApprovalDecision, event: AgentEvent): Approval {
 	const by = typeof event.payload.by === "string" ? event.payload.by : null;
 	const level = riskLevelOf(event.payload.level);
-	if (by === null || !isValidApproverName(by) || level === null) {
+	const score = typeof event.payload.score === "number" ? event.payload.score : null;
+	const contributions = riskContributionsOf(event.payload.contributions);
+	const configFingerprint = typeof event.payload.configFingerprint === "string" ? event.payload.configFingerprint : null;
+	if (by === null || !isValidApproverName(by) || level === null || score === null || contributions === null || configFingerprint === null) {
 		throw new Error(`run ${runId} has a recorded ${event.kind} event whose payload cannot be healed from`);
 	}
-	return { runId, decision, by, at: event.ts, override: Boolean(event.payload.override), level };
+	return { runId, decision, by, at: event.ts, override: Boolean(event.payload.override), level, score, contributions, configFingerprint };
 }
 
 function riskLevelOf(value: unknown): RiskLevel | null {
 	return (RISK_LEVELS as readonly unknown[]).includes(value) ? (value as RiskLevel) : null;
+}
+
+function riskContributionsOf(value: unknown): RiskContribution[] | null {
+	if (!Array.isArray(value)) return null;
+	const contributions: RiskContribution[] = [];
+	for (const entry of value) {
+		if (typeof entry !== "object" || entry === null) return null;
+		const { id, label, points } = entry as Record<string, unknown>;
+		if (typeof id !== "string" || typeof label !== "string" || typeof points !== "number") return null;
+		contributions.push({ id, label, points });
+	}
+	return contributions;
 }
 
 // Compares this run's config snapshot against a live read taken right now,

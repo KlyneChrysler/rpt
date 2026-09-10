@@ -23,6 +23,9 @@ const approvalSchema = z
 		at: z.string().datetime(),
 		override: z.boolean(),
 		level: z.enum(RISK_LEVELS),
+		score: z.number(),
+		contributions: z.array(z.object({ id: z.string(), label: z.string(), points: z.number() }).strict()),
+		configFingerprint: z.string(),
 	})
 	.strict();
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalize, checksumOf, verifyChecksum } from "../../src/domain/checksum.js";
+import { canonicalize, checksumOf, fingerprintOf, verifyChecksum } from "../../src/domain/checksum.js";
 import type { AgentEvent } from "../../src/domain/events.js";
 
 const event: AgentEvent = {
@@ -108,5 +108,20 @@ describe("arrays", () => {
 			payload: { items: [{ x: 2 }, { x: 1 }] },
 		};
 		expect(canonicalize(order1)).not.toBe(canonicalize(order2));
+	});
+});
+
+describe("fingerprintOf", () => {
+	it("is deterministic for the same value", () => {
+		const value = { thresholds: { review: 21, approval: 51, block: 81 }, ruleOverrides: {} };
+		expect(fingerprintOf(value)).toBe(fingerprintOf(value));
+	});
+
+	it("is insensitive to key order, the same way canonicalize is", () => {
+		expect(fingerprintOf({ a: 1, b: 2 })).toBe(fingerprintOf({ b: 2, a: 1 }));
+	});
+
+	it("changes when the value changes", () => {
+		expect(fingerprintOf({ block: 81 })).not.toBe(fingerprintOf({ block: 82 }));
 	});
 });

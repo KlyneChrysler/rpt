@@ -145,4 +145,33 @@ describe("appendEventIfNoneOfKind", () => {
 		const { events } = await readEvents(rptDir, 1);
 		expect(events.filter((event) => event.kind === "ApprovalGranted")).toHaveLength(1);
 	});
+
+	it("does not treat a matching-kind event as a conflict when isConflict says it is not one", async () => {
+		await appendEvent(rptDir, 1, draft("RunStarted", { task: "t" }));
+		await appendEvent(rptDir, 1, draft("ApprovalGranted", { junk: true }));
+		const result = await appendEventIfNoneOfKind(
+			rptDir,
+			1,
+			["ApprovalGranted", "ApprovalDenied"],
+			draft("ApprovalGranted", { by: "klyne" }),
+			() => false,
+		);
+		expect(result.appended?.payload.by).toBe("klyne");
+		const { events } = await readEvents(rptDir, 1);
+		expect(events.filter((event) => event.kind === "ApprovalGranted")).toHaveLength(2);
+	});
+
+	it("still treats a matching-kind event as a conflict when isConflict says it is one, even with a custom predicate", async () => {
+		await appendEvent(rptDir, 1, draft("RunStarted", { task: "t" }));
+		const existing = await appendEvent(rptDir, 1, draft("ApprovalGranted", { by: "klyne" }));
+		const result = await appendEventIfNoneOfKind(
+			rptDir,
+			1,
+			["ApprovalGranted", "ApprovalDenied"],
+			draft("ApprovalGranted", { by: "someone-else" }),
+			() => true,
+		);
+		expect(result.appended).toBeNull();
+		expect(result.conflicting?.seq).toBe(existing.seq);
+	});
 });

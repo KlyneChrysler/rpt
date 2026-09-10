@@ -50,16 +50,24 @@ export type ConditionalAppendResult =
 // is not reentrant - a caller already holding it would deadlock waiting on
 // its own turn. Returns the conflicting event, not just a boolean, so a
 // caller can heal from its recorded payload instead of re-deriving one.
+//
+// isConflict lets the caller say what "matches by kind" is not enough to
+// call a real conflict: an event of one of the given kinds can exist and
+// still be noise (a malformed payload the domain layer already gapped
+// rather than applied) rather than a genuine prior decision. Defaults to
+// "any matching-kind event is a conflict" for callers that have no such
+// distinction to make.
 export async function appendEventIfNoneOfKind(
 	rptDir: string,
 	runId: RunId,
 	kinds: readonly EventKind[],
 	draft: DraftEvent,
+	isConflict: (event: AgentEvent) => boolean = () => true,
 ): Promise<ConditionalAppendResult> {
 	const path = eventLogOf(rptDir, runId);
 	await mkdir(dirname(path), { recursive: true });
 	await ensureExists(path);
-	return withInProcessLock(path, () => appendIfNoneOfKindLocked(path, runId, kinds, draft));
+	return withInProcessLock(path, () => appendIfNoneOfKindLocked(path, runId, kinds, draft, isConflict));
 }
 
 async function appendIfNoneOfKindLocked(
@@ -67,12 +75,13 @@ async function appendIfNoneOfKindLocked(
 	runId: RunId,
 	kinds: readonly EventKind[],
 	draft: DraftEvent,
+	isConflict: (event: AgentEvent) => boolean,
 ): Promise<ConditionalAppendResult> {
 	const release = await lockfile.lock(path, { retries: { retries: 10, minTimeout: 5, maxTimeout: 100 } });
 	try {
 		await ensureTrailingNewline(path);
 		const lines = (await readOrEmpty(path)).split("\n").filter((line) => line !== "");
-		const conflicting = parseLines(lines).events.find((event) => kinds.includes(event.kind)) ?? null;
+		const conflicting = parseLines(lines).events.find((event) => kinds.includes(event.kind) && isConflict(event)) ?? null;
 		if (conflicting !== null) return { appended: null, conflicting };
 		const event: AgentEvent = { ...draft, payload: capPayload(draft.payload), runId, seq: lines.length };
 		const stored: StoredEvent = { ...event, checksum: checksumOf(event) };

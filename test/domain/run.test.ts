@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, DraftEvent } from "../../src/domain/events.js";
-import { applyApprovalDecision, projectRun } from "../../src/domain/run.js";
+import { applyApprovalDecision, isValidApprovalEvent, projectRun } from "../../src/domain/run.js";
 
 function log(...drafts: DraftEvent[]): AgentEvent[] {
 	return drafts.map((draft, seq) => ({ ...draft, runId: 1, seq }));
@@ -198,6 +198,32 @@ describe("applyApprovalDecision", () => {
 
 	it("refuses re-approving a run that is already approved", () => {
 		expect(() => applyApprovalDecision("APPROVED", "VERIFIED", "approved")).toThrow();
+	});
+});
+
+describe("isValidApprovalEvent", () => {
+	function approvalEvent(kind: "ApprovalGranted" | "ApprovalDenied", payload: Record<string, unknown> = {}): AgentEvent {
+		return { runId: 1, seq: 0, ts: "2026-09-09T10:00:00.000Z", source: "rpt", kind, payload };
+	}
+
+	it("is true for a real ApprovalGranted event that legally applies from the given state", () => {
+		expect(isValidApprovalEvent("VERIFYING", approvalEvent("ApprovalGranted", { verdictName: "VERIFIED" }))).toBe(true);
+	});
+
+	it("is true for a real ApprovalDenied event", () => {
+		expect(isValidApprovalEvent("VERIFYING", approvalEvent("ApprovalDenied", { verdictName: "FAILED" }))).toBe(true);
+	});
+
+	it("is false for an event with no recognisable verdict name - the junk-event case", () => {
+		expect(isValidApprovalEvent("VERIFYING", approvalEvent("ApprovalGranted", { verdictName: "NONSENSE" }))).toBe(false);
+	});
+
+	it("is false when the state the event would apply to makes it an illegal transition", () => {
+		expect(isValidApprovalEvent("RECORDED", approvalEvent("ApprovalGranted", { verdictName: "VERIFIED" }))).toBe(false);
+	});
+
+	it("is false for an event of an unrelated kind", () => {
+		expect(isValidApprovalEvent("VERIFYING", { runId: 1, seq: 0, ts: "2026-09-09T10:00:00.000Z", source: "rpt", kind: "VerifierCompleted", payload: {} })).toBe(false);
 	});
 });
 

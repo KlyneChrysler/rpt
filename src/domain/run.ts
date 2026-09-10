@@ -159,6 +159,30 @@ function verdictNameOfSafe(payload: Record<string, unknown>): VerdictName | null
 	return value === "VERIFIED" || value === "FAILED" || value === "UNVERIFIED" ? value : null;
 }
 
+// Answers "would this specific event, applied to a run currently at `state`,
+// represent a real decision" - the same question the reducer's own
+// applyApprovalEvent case answers by falling back to hasGaps on failure,
+// exposed here so src/app/approveRun.ts's locked append can tell a genuine
+// conflicting decision apart from a junk event that happens to share the
+// same event kind. A run whose own precondition check already succeeded
+// (state is still pre-decision) can only have a pre-existing approval-kind
+// event in its log if that event was invalid - a valid one would already
+// have moved the state away from where this run's own fold left it - so
+// this doubles as "is the event that made appendEventIfNoneOfKind see a
+// conflict actually one, or is it noise the fold already rejected."
+export function isValidApprovalEvent(state: RunState, event: AgentEvent): boolean {
+	if (event.kind !== "ApprovalGranted" && event.kind !== "ApprovalDenied") return false;
+	const verdictName = verdictNameOfSafe(event.payload);
+	if (verdictName === null) return false;
+	const decision: ApprovalDecision = event.kind === "ApprovalGranted" ? "approved" : "rejected";
+	try {
+		applyApprovalDecision(state, verdictName, decision);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function withPath(claims: Claims, path: string): Claims {
 	if (path === "" || claims.mutatedPaths.includes(path)) return claims;
 	return { ...claims, mutatedPaths: [...claims.mutatedPaths, path] };

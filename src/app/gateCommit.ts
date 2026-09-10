@@ -7,7 +7,9 @@ import { appendEvent } from "../store/eventLog.js";
 import { rptDirOf } from "../store/paths.js";
 import { activeRun } from "../store/runIndex.js";
 import { readApproval } from "./approveRun.js";
-import { assessAndRecord } from "./assessRun.js";
+import { assessRun } from "./assessRun.js";
+import { fingerprintOf } from "../domain/checksum.js";
+import { writeRiskAssessment } from "../store/risk.js";
 import { loadRun } from "./loadRun.js";
 import { readVerdict, verifyRun } from "./verifyRun.js";
 
@@ -28,9 +30,22 @@ export async function gateCommit(repoRoot: string): Promise<GateOutcome> {
 	// the run's state, so a projection taken beforehand is stale by the time the
 	// assessment reads it.
 	const run = await loadRun(repoRoot, entry.id);
-	const { assessment } = await assessAndRecord(repoRoot, run, verdict);
+	// Re-derives rather than reading anything back, which is the security
+	// property the gate turns on, but records no RiskAssessed of its own: when
+	// the gate is what triggered the verification above, verifyRun has just
+	// written one, and two identical assessments a millisecond apart read as a
+	// bug to anyone looking at the timeline. What the gate judged at is carried
+	// on the ApprovalRequested event it does record, so nothing is lost.
+	const { assessment, config } = await assessRun(repoRoot, run, verdict);
+	await writeRiskAssessment(rptDirOf(repoRoot), {
+		...assessment,
+		runId: run.id,
+		verdictName: verdict.name,
+		configFingerprint: fingerprintOf(config),
+		assessedAt: new Date().toISOString(),
+	});
 	const judgement = await judge(repoRoot, run, verdict, assessment);
-	await recordGateEvent(repoRoot, run.id, judgement);
+	await recordGateEvent(repoRoot, run.id, assessment, judgement);
 	return judgement.outcome;
 }
 
@@ -85,12 +100,17 @@ function bypassRequested(): boolean {
 // or - lacking the verdictName such an event must carry - gap the log and
 // permanently disqualify the run from VERIFIED. The gate observes; it does
 // not decide.
-async function recordGateEvent(repoRoot: string, runId: RunId, judgement: Judgement): Promise<void> {
+async function recordGateEvent(repoRoot: string, runId: RunId, risk: RiskAssessment, judgement: Judgement): Promise<void> {
 	await appendEvent(rptDirOf(repoRoot), runId, {
 		ts: new Date().toISOString(),
 		source: "rpt",
 		kind: "ApprovalRequested",
 		payload: {
+			// The score this decision was actually made at. Config can drift
+			// between a run being verified and a commit being attempted, so the
+			// gate's own number is not always the one verification recorded.
+			score: risk.score,
+			level: risk.level,
 			allowed: judgement.outcome.allowed,
 			// The flag says the bypass is what allowed this commit, not merely
 			// that the variable happened to be set: a run a human had already

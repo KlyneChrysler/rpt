@@ -137,14 +137,23 @@ describe("gateCommit", () => {
 		expect(events.some((event) => event.payload.bypass === true)).toBe(false);
 	});
 
-	it("records the assessment it judged on, so the timeline shows when and at what", async () => {
+	it("records the score it judged at on its own gate event", async () => {
 		const repo = await repoWithRun({});
 		await gateCommit(repo);
 		const { events } = await readEvents(rptDirOf(repo), 1);
-		const assessed = events.find((event) => event.kind === "RiskAssessed");
-		expect(typeof assessed?.payload.score).toBe("number");
-		expect(assessed?.payload.level).toMatch(/LOW|MEDIUM|HIGH|CRITICAL/);
-		expect(Array.isArray(assessed?.payload.contributions)).toBe(true);
+		const requested = events.find((event) => event.kind === "ApprovalRequested");
+		expect(typeof requested?.payload.score).toBe("number");
+		expect(requested?.payload.level).toMatch(/LOW|MEDIUM|HIGH|CRITICAL/);
+	});
+
+	// verifyRun records one when it produces a verdict. The gate re-derives for
+	// its own decision but must not record a second identical one a millisecond
+	// later, which reads as a bug on the timeline and says nothing new.
+	it("does not add a second RiskAssessed for the verification it just triggered", async () => {
+		const repo = await repoWithRun({});
+		await gateCommit(repo);
+		const { events } = await readEvents(rptDirOf(repo), 1);
+		expect(events.filter((event) => event.kind === "RiskAssessed")).toHaveLength(1);
 	});
 
 	it("writes risk.json beside the verdict, bound to what it was derived from", async () => {

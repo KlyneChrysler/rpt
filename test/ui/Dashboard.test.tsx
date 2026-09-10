@@ -57,6 +57,30 @@ describe("Dashboard", () => {
 		expect(selected.trimStart().startsWith(">")).toBe(true);
 	});
 
+	// The regression guard for a bug that shipped past every other test here.
+	// Ink trims trailing whitespace inside a Text, so padEnd-based columns
+	// reached the terminal shorter than they were written, and a task long
+	// enough to wrap pushed every row below it out of alignment. Every
+	// substring assertion still passed while the table had no aligned columns
+	// at all - row counts and offsets are what a table actually means.
+	//
+	// This one reproduces it. The offset assertion below does not, under this
+	// renderer's default width, and is kept as a cheap invariant rather than
+	// as a second guard.
+	it("keeps a long task on one row rather than wrapping the table out of shape", () => {
+		const long: DashboardModel = { runs: [{ ...model.runs[0]!, task: "x".repeat(400) }] };
+		const frame = frameOf(<Dashboard model={long} selectedIndex={0} />);
+		expect(frame.split("\n").filter((line) => line.includes("x")).length).toBe(1);
+	});
+
+	it("puts the id column at the same offset whether or not the row is selected", () => {
+		const frame = frameOf(<Dashboard model={model} selectedIndex={0} />);
+		const rows = frame.split("\n");
+		const selected = rows.find((row) => row.includes("1842")) ?? "";
+		const unselected = rows.find((row) => row.includes("1841")) ?? "";
+		expect(selected.indexOf("1842")).toBe(unselected.indexOf("1841"));
+	});
+
 	it("renders an explanatory empty state", () => {
 		const frame = frameOf(<Dashboard model={{ runs: [] }} selectedIndex={0} />);
 		expect(frame).toMatch(/no runs/i);

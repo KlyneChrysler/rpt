@@ -1,9 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initRepo } from "../../src/app/initRepo.js";
 import { loadRun } from "../../src/app/loadRun.js";
-import { readVerdict, verifyRun } from "../../src/app/verifyRun.js";
+import { disposeQuietly, readVerdict, verifyRun } from "../../src/app/verifyRun.js";
 import { driveFakeAgent } from "../support/fakeAgent.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
@@ -76,6 +76,57 @@ describe("verifyRun", () => {
 		await expect(verifyRun(repo, 1)).rejects.toThrow(/interrupted/);
 	});
 
+	it("gives the true reason for a run that was never sealed, not a fabricated interruption", async () => {
+		// No "stop" step: the run is started but never ends, so it never becomes a
+		// candidate for verification at all - this must not be reported as an
+		// interrupted verification attempt, which would invent a history that
+		// never happened.
+		const repo = await makeFixtureRepo();
+		await initRepo(repo);
+		await writeFile(join(repo, "rpt.config.json"), JSON.stringify({ testCommand: "exit 0" }));
+		await driveFakeAgent(repo, [{ kind: "start", transcriptPath: null }]);
+		await expect(verifyRun(repo, 1)).rejects.toThrow(/no sealed end state/);
+	});
+
+	it("catches the index up to a verdict that was written just before a crash", async () => {
+		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
+		const { appendEvent } = await import("../../src/store/eventLog.js");
+		const { rptDirOf } = await import("../../src/store/paths.js");
+		const { listRuns } = await import("../../src/store/runIndex.js");
+		const { writeVerdict } = await import("../../src/store/verdicts.js");
+		const rptDir = rptDirOf(repo);
+
+		// Simulates a crash between writeVerdict and the final upsertRun in the
+		// previous (successful) attempt: the verdict is durably on disk, but the
+		// index still shows whatever it was left at (ENDED, in this fixture).
+		await appendEvent(rptDir, 1, { ts: new Date().toISOString(), source: "rpt", kind: "VerificationStarted", payload: {} });
+		const staged = { runId: 1, name: "UNVERIFIED" as const, results: [], decidedAt: new Date().toISOString() };
+		await writeVerdict(rptDir, staged);
+
+		expect(await verifyRun(repo, 1)).toEqual(staged);
+
+		const after = (await listRuns(rptDir)).find((entry) => entry.id === 1);
+		expect(after?.state).toBe("UNVERIFIED");
+	});
+
+	it("does not drag an index that has moved past the verdict stage backwards", async () => {
+		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
+		await verifyRun(repo, 1);
+		const { rptDirOf } = await import("../../src/store/paths.js");
+		const { listRuns, upsertRun } = await import("../../src/store/runIndex.js");
+		const rptDir = rptDirOf(repo);
+		// Simulates a later plan's approval step having already moved this closed
+		// run further along than verifyRun itself ever writes.
+		const indexed = (await listRuns(rptDir)).find((entry) => entry.id === 1);
+		if (indexed === undefined) throw new Error("test setup: run 1 missing from the index");
+		await upsertRun(rptDir, { ...indexed, state: "AWAITING_APPROVAL" });
+
+		await verifyRun(repo, 1);
+
+		const after = (await listRuns(rptDir)).find((entry) => entry.id === 1);
+		expect(after?.state).toBe("AWAITING_APPROVAL");
+	});
+
 	it("propagates the real failure rather than a worktree disposal failure, and still disposes the worktree", async () => {
 		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
 		// Corrupts config *after* the run ended, so verifyRun's own read of it
@@ -85,5 +136,35 @@ describe("verifyRun", () => {
 		await expect(verifyRun(repo, 1)).rejects.toThrow(/rpt\.config\.json is unreadable/);
 		const { git } = await import("../../src/git/exec.js");
 		expect(await git(repo, ["worktree", "list"])).not.toContain("rpt-wt-");
+	});
+});
+
+describe("disposeQuietly", () => {
+	it("logs the disposal failure to stderr without throwing, naming both errors", async () => {
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const fakeWorktree = {
+				path: "/fake/rpt-wt-test/tree",
+				dispose: () => Promise.reject(new Error("dispose boom")),
+			};
+			await expect(disposeQuietly(fakeWorktree, 1, new Error("pending failure"))).resolves.toBeUndefined();
+			expect(spy).toHaveBeenCalledTimes(1);
+			const [message] = spy.mock.calls[0] as [string];
+			expect(message).toContain("pending failure");
+			expect(message).toContain("dispose boom");
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("resolves silently when disposal succeeds", async () => {
+		const spy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			const fakeWorktree = { path: "/fake/rpt-wt-test/tree", dispose: () => Promise.resolve() };
+			await expect(disposeQuietly(fakeWorktree, 1, new Error("pending failure"))).resolves.toBeUndefined();
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

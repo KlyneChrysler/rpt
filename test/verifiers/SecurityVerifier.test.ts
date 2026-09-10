@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { IS_WINDOWS } from "../support/platform.js";
 import { DEFAULT_CONFIG } from "../../src/config/load.js";
 import { createSnapshot } from "../../src/git/snapshot.js";
 import { securityVerifier } from "../../src/verifiers/SecurityVerifier.js";
@@ -73,7 +74,14 @@ const MIXED_AUDIT_JSON = JSON.stringify({
 });
 const ENOLOCK_AUDIT_JSON = JSON.stringify({ error: { code: "ENOLOCK", summary: "requires an existing lockfile" } });
 
-describe("securityVerifier", () => {
+// These suites hand the verifier POSIX shell fragments - `exit 1`, `echo x; exit 2`,
+// a fake npm written as a shell script - and the verifier runs them through the
+// system shell, which on Windows is cmd.exe. What they assert is rpt's handling
+// of a command's outcome, not the fixture's syntax, so on Windows they are
+// skipped rather than rewritten twice: a second set of cmd.exe fragments would
+// test the fixture, and the behaviour they cover is already proven on two
+// platforms.
+describe.skipIf(IS_WINDOWS)("securityVerifier", () => {
 	it("passes a clean change", async () => {
 		const result = await securityVerifier.run(await contextAfter({ "a.ts": "export const a = 1;\n" }));
 		expect(result.status).toBe("passed");

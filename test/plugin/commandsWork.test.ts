@@ -1,18 +1,16 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { initRepo } from "../../src/app/initRepo.js";
 import { driveFakeAgent } from "../support/fakeAgent.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
+import { buildCli, cliPath } from "../support/platform.js";
 
-const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
-const cliPath = join(projectRoot, "dist/cli/index.js");
 const COMMANDS = join("plugin", "commands");
 
 beforeAll(() => {
-	execFileSync(join(projectRoot, "node_modules/.bin/tsc"), ["-p", join(projectRoot, "tsconfig.json")]);
+	buildCli();
 }, 120_000);
 
 // The rpt invocation each command file tells the agent to run, taken from the

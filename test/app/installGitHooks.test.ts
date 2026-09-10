@@ -3,18 +3,25 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { installGitHooks } from "../../src/app/installGitHooks.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
+import { IS_WINDOWS } from "../support/platform.js";
 
 function hookPath(repo: string, name: string): string {
 	return join(repo, ".git", "hooks", name);
 }
 
 describe("installGitHooks", () => {
-	it("writes an executable pre-commit hook that runs the gate", async () => {
+	it("writes a pre-commit hook that runs the gate", async () => {
 		const repo = await makeFixtureRepo();
 		await installGitHooks(repo);
-		const path = hookPath(repo, "pre-commit");
-		expect(await readFile(path, "utf8")).toContain("rpt gate");
-		expect((await stat(path)).mode & 0o111).not.toBe(0);
+		expect(await readFile(hookPath(repo, "pre-commit"), "utf8")).toContain("rpt gate");
+	});
+
+	// Windows has no executable bit and Git for Windows runs hooks through its
+	// own bash regardless of one, so this is a posix-only property of the file.
+	it.skipIf(IS_WINDOWS)("marks the hook executable where that means something", async () => {
+		const repo = await makeFixtureRepo();
+		await installGitHooks(repo);
+		expect((await stat(hookPath(repo, "pre-commit"))).mode & 0o111).not.toBe(0);
 	});
 
 	it("appends to an existing hook rather than replacing it", async () => {

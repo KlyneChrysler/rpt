@@ -51,6 +51,18 @@ describe("the agent surface is read only", () => {
 		expect(typeof manifest.version).toBe("string");
 	});
 
+	// The marketplace manifest is what makes `claude plugin marketplace add
+	// KlyneChrysler/rpt` work at all. A version that drifts from the plugin's
+	// own installs the wrong thing, silently.
+	it("ships a marketplace manifest whose entry agrees with the plugin", async () => {
+		const marketplace = JSON.parse(await readFile(join(".claude-plugin", "marketplace.json"), "utf8"));
+		const plugin = JSON.parse(await readFile(join("plugin", ".claude-plugin", "plugin.json"), "utf8"));
+		const entry = marketplace.plugins.find((candidate: { name: string }) => candidate.name === plugin.name);
+		expect(entry).toBeDefined();
+		expect(entry.version).toBe(plugin.version);
+		expect(entry.source).toBe("./plugin");
+	});
+
 	it("keeps the plugin version in step with the package version", async () => {
 		const manifest = JSON.parse(await readFile(join("plugin", ".claude-plugin", "plugin.json"), "utf8"));
 		const pkg = JSON.parse(await readFile("package.json", "utf8"));

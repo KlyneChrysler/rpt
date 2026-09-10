@@ -1,24 +1,22 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { buildCli, cliPath, projectRoot } from "../support/platform.js";
 import { handleHook, runHookCommand } from "../../src/cli/hook.js";
 import { allocateRunId } from "../../src/store/runIndex.js";
 import { rptDirOf } from "../../src/store/paths.js";
 import { recordStartFailure } from "../../src/store/startFailures.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
-const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
-const cliPath = join(repoRoot, "dist/cli/index.js");
-const tscBin = join(repoRoot, "node_modules/.bin/tsc");
+
 
 // These tests exercise the actual built binary, not the source - a raw stack trace
 // or a broken json pipe is a property of what `node dist/cli/index.js` prints, not
 // of any function in isolation, so a fresh build is the only faithful way to check it.
 beforeAll(() => {
-	execFileSync(tscBin, ["-p", join(repoRoot, "tsconfig.json")]);
+	buildCli();
 }, 60_000);
 
 type CliResult = { stdout: string; stderr: string; exitCode: number };

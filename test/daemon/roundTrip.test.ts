@@ -8,6 +8,7 @@ import { deliver, deliverOrRecordGap, sendEvent } from "../../src/daemon/client.
 import { startDaemon, type Daemon } from "../../src/daemon/server.js";
 import { readEvents } from "../../src/store/eventLog.js";
 import { eventLogOf } from "../../src/store/paths.js";
+import { IS_WINDOWS } from "../support/platform.js";
 
 let rptDir = "";
 let daemon: Daemon | null = null;
@@ -161,7 +162,13 @@ describe("sendEvent socket lifecycle", () => {
 			// has cleanly closed, so only a 'close' listener catches this - without
 			// one the promise never settles. The explicit test timeout makes a
 			// regression here fail fast instead of stalling the suite.
-			const socketPath = join(rptDir, "close-without-reply.sock");
+			// A unix socket path is not bindable on Windows, where an address has to
+			// live in the pipe namespace. The production code already picks the
+			// right one per platform (socketPathOf); this test builds its own
+			// server, so it has to pick too.
+			const socketPath = IS_WINDOWS
+				? `\\\\.\\pipe\\rpt-test-${process.pid}-${Date.now()}`
+				: join(rptDir, "close-without-reply.sock");
 			// resume() drains the frame the client writes on connect: without it the
 			// server-side socket's readable half never observes EOF, so it never
 			// finishes its own half of the close and server.close() below would hang

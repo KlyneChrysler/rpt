@@ -62,9 +62,11 @@ describe("socketPathOf across platforms", () => {
 		Object.defineProperty(process, "platform", { value: real, configurable: true });
 	});
 
+	// join() uses the host's separator regardless of the platform being
+	// pretended, so this asserts the shape rather than an exact posix string.
 	it("is a file inside .rpt on posix", () => {
 		pretendPlatform("darwin");
-		expect(socketPathOf("/repo/.rpt")).toBe("/repo/.rpt/daemon.sock");
+		expect(socketPathOf(join("repo", ".rpt"))).toBe(join("repo", ".rpt", "daemon.sock"));
 	});
 
 	it("is a named pipe on windows, not a path under .rpt", () => {

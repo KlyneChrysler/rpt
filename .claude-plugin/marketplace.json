@@ -1,0 +1,21 @@
+{
+  "name": "rpt",
+  "owner": { "name": "KlyneChrysler" },
+  "metadata": {
+    "description": "rpt: independent verification of what an AI coding agent actually did",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "rpt",
+      "source": "./plugin",
+      "description": "Read-only rpt verbs for agents: status, verify, risk and diff. Approval is never exposed.",
+      "version": "0.1.0",
+      "author": { "name": "KlyneChrysler" },
+      "homepage": "https://github.com/KlyneChrysler/rpt#readme",
+      "repository": "https://github.com/KlyneChrysler/rpt",
+      "license": "MIT",
+      "keywords": ["verification", "audit", "risk", "observability"]
+    }
+  ]
+}

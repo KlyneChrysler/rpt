@@ -1,9 +1,8 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ensureDaemon } from "../../src/daemon/spawn.js";
 import { startDaemon, type Daemon } from "../../src/daemon/server.js";
@@ -11,13 +10,10 @@ import { acquireDaemonLock, daemonLockHeld, type DaemonLockRelease } from "../..
 import { rptDirOf, socketPathOf } from "../../src/store/paths.js";
 import { initRepo } from "../../src/app/initRepo.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
-
-const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
-const cliPath = join(projectRoot, "dist/cli/index.js");
-const tscBin = join(projectRoot, "node_modules/.bin/tsc");
+import { buildCli, cliPath, projectRoot } from "../support/platform.js";
 
 beforeAll(() => {
-	execFileSync(tscBin, ["-p", join(projectRoot, "tsconfig.json")]);
+	buildCli();
 }, 120_000);
 
 let daemon: Daemon | null = null;

@@ -31,7 +31,11 @@ describe("openWorktree", () => {
 		await writeFile(join(repo, "auth.ts"), "first\n");
 		const worktree = await openWorktree(repo, await createSnapshot(repo, 1, "end"));
 		await writeFile(join(repo, "auth.ts"), "second\n");
-		expect(await readFile(join(worktree.path, "auth.ts"), "utf8")).toBe("first\n");
+		// trim, not an exact compare: Git for Windows converts line endings on
+		// checkout, so a snapshot written as "first\n" materialises as
+		// "first\r\n" there. The property under test is isolation from the later
+		// edit, not which newline git chose.
+		expect((await readFile(join(worktree.path, "auth.ts"), "utf8")).trim()).toBe("first");
 		await worktree.dispose();
 	});
 
@@ -108,7 +112,9 @@ describe("pruneWorktrees", () => {
 		// git resolves the registered path (e.g. through macOS's /var -> /private/var
 		// symlink), so it need not match our literal temp path byte-for-byte -
 		// compare on the "rpt-wt-*/tree" tail both sides agree on instead.
-		const tail = join(basename(dirname(worktree.path)), basename(worktree.path));
+		// git prints worktree paths with forward slashes on every platform, so the
+		// tail is built with one rather than the host separator.
+		const tail = `${basename(dirname(worktree.path))}/${basename(worktree.path)}`;
 		expect(pruned).toEqual([expect.stringContaining(tail)]);
 		expect(await git(repo, ["worktree", "list"])).not.toContain(worktree.path);
 	});

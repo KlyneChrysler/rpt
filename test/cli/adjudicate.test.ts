@@ -1,19 +1,17 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { buildCli, cliPath, projectRoot } from "../support/platform.js";
 import { initRepo } from "../../src/app/initRepo.js";
 import { git } from "../../src/git/exec.js";
 import { driveFakeAgent } from "../support/fakeAgent.js";
 import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
-const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
-const cliPath = join(projectRoot, "dist/cli/index.js");
-const tscBin = join(projectRoot, "node_modules/.bin/tsc");
+
 
 beforeAll(() => {
-	execFileSync(tscBin, ["-p", join(projectRoot, "tsconfig.json")]);
+	buildCli();
 }, 120_000);
 
 type CliResult = { stdout: string; stderr: string; exitCode: number };

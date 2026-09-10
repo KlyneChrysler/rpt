@@ -2,6 +2,7 @@ import { lstat, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { IS_WINDOWS } from "../support/platform.js";
 import { DEFAULT_CONFIG } from "../../src/config/load.js";
 import { createTestVerifier, testVerifier } from "../../src/verifiers/TestVerifier.js";
 import type { RunContext } from "../../src/verifiers/Verifier.js";
@@ -37,7 +38,14 @@ async function contextForNodeProject(opts: { repoHasNodeModules: boolean }): Pro
 	};
 }
 
-describe("testVerifier", () => {
+// These suites hand the verifier POSIX shell fragments - `exit 1`, `echo x; exit 2`,
+// a fake npm written as a shell script - and the verifier runs them through the
+// system shell, which on Windows is cmd.exe. What they assert is rpt's handling
+// of a command's outcome, not the fixture's syntax, so on Windows they are
+// skipped rather than rewritten twice: a second set of cmd.exe fragments would
+// test the fixture, and the behaviour they cover is already proven on two
+// platforms.
+describe.skipIf(IS_WINDOWS)("testVerifier", () => {
 	it("passes when the configured command exits zero", async () => {
 		const result = await testVerifier.run(await contextRunning("exit 0"));
 		expect(result.status).toBe("passed");

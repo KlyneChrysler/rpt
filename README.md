@@ -84,6 +84,19 @@ rpt doctor           # when something feels wrong
 git log --notes=rpt  # the receipts
 ```
 
+## Slash commands in Claude Code
+
+Read-only verbs your agent can call on itself: `/rpt:status`, `/rpt:verify`,
+`/rpt:risk`, `/rpt:diff`.
+
+```bash
+claude plugin marketplace add KlyneChrysler/rpt
+claude plugin install rpt@rpt
+```
+
+There is no `/rpt:approve`. An agent that could clear its own run would make the
+whole thing decorative.
+
 ## Two things to know up front
 
 **A skip is not a pass.** A check that could not run means rpt does not know,

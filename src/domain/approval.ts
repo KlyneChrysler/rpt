@@ -25,12 +25,17 @@ export type Approval = {
 };
 
 const APPROVER_NAME_MAX_LENGTH = 200;
-// Rejects every ASCII control character, including newline, carriage return
-// and tab. The approver's name flows verbatim into a git note a later task
-// writes and reviewers read; an unescaped newline in it forges an extra line
-// of that note's own output.
-const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/;
+// An allowlist, not a denylist: only Unicode letters, marks (for combining
+// accents), numbers, punctuation, symbols, and a plain space are accepted.
+// A denylist of ASCII control characters was tried first and missed several
+// Unicode line terminators - U+2028 LINE SEPARATOR, U+2029 PARAGRAPH
+// SEPARATOR, U+0085 NEXT LINE - none of which are ASCII control characters,
+// all of which render as a line break in enough contexts (including the git
+// note a later task writes from this record) to forge a line the same way a
+// plain newline does. Excluding everything not explicitly listed closes that
+// gap instead of chasing each new terminator individually.
+const ALLOWED_NAME_RE = /^[\p{L}\p{M}\p{N}\p{P}\p{S} ]+$/u;
 
 export function isValidApproverName(name: string): boolean {
-	return name.length > 0 && name.length <= APPROVER_NAME_MAX_LENGTH && !CONTROL_CHAR_RE.test(name);
+	return name.length <= APPROVER_NAME_MAX_LENGTH && ALLOWED_NAME_RE.test(name);
 }

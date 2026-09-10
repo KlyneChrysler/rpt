@@ -16,8 +16,11 @@ const approvalSchema = z
 	.object({
 		runId: z.number().int(),
 		decision: z.enum(APPROVAL_DECISIONS),
-		by: z.string().refine(isValidApproverName, { message: "approver name is empty, too long, or contains control characters" }),
-		at: z.string(),
+		by: z.string().refine(isValidApproverName, { message: "approver name is empty, too long, or contains a disallowed character" }),
+		// A bare z.string() accepted anything, including a literal newline - the
+		// neighbouring field to the approver name allowlist above, and the same
+		// injection risk into the git note this record eventually feeds.
+		at: z.string().datetime(),
 		override: z.boolean(),
 		level: z.enum(RISK_LEVELS),
 	})

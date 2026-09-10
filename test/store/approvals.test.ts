@@ -62,6 +62,30 @@ describe("readApproval validation", () => {
 		await expect(readApproval(rptDir, 1)).rejects.toThrow();
 	});
 
+	// Regression: a denylist of ASCII control characters missed these -
+	// U+2028 LINE SEPARATOR and U+0085 NEXT LINE render as a line break in
+	// enough contexts to forge one the same way a plain "\n" does, without
+	// being an ASCII control character themselves.
+	it("rejects an approver name containing a Unicode line separator", async () => {
+		await writeRaw(1, approval({ by: "klyne FORGED" }));
+		await expect(readApproval(rptDir, 1)).rejects.toThrow();
+	});
+
+	it("rejects an approver name containing NEL (U+0085)", async () => {
+		await writeRaw(1, approval({ by: "klyneFORGED" }));
+		await expect(readApproval(rptDir, 1)).rejects.toThrow();
+	});
+
+	it("accepts an approver name with accented and non-Latin letters", async () => {
+		await writeRaw(1, approval({ by: "Klyné 클라인" }));
+		expect((await readApproval(rptDir, 1))?.by).toBe("Klyné 클라인");
+	});
+
+	it("rejects a timestamp containing a literal newline", async () => {
+		await writeRaw(1, { ...approval(), at: "2026-09-10T10:00:00.000Z\nrpt: FORGED LINE" });
+		await expect(readApproval(rptDir, 1)).rejects.toThrow();
+	});
+
 	it("rejects a decision outside the known enum", async () => {
 		await writeRaw(1, { ...approval(), decision: "maybe" });
 		await expect(readApproval(rptDir, 1)).rejects.toThrow();

@@ -11,12 +11,21 @@ log says so instead of silently closing the gap. If the agent writes a file and 
 mentions it, rpt still sees it, because the observation comes from asking git what
 changed between two snapshots, not from trusting the agent's own claims.
 
-This is Plan 1 of the project. **It records and replays. It does not verify changes,
-score risk, or gate a commit.** Those are a later plan. Anything that sounds like
-adjudication - a run's `state` field can reach `VERIFYING`, `VERIFIED`, `FAILED`,
-`AWAITING_APPROVAL`, and so on - is scaffolding for that later plan; nothing in this
-codebase currently drives a run into any of those states. A run recorded today ends
-its life in `ENDED`.
+rpt also verifies, scores risk, and requires a gated, explicit human decision
+before a run counts as approved - not yet a commit gate itself (nothing in this
+codebase hooks `git commit`; see "Commands" below for what actually ships as a
+CLI command today), but the engine that decision would sit behind. A run's
+`state` field is not scaffolding: it can reach `VERIFYING`, `VERIFIED`, `FAILED`,
+`UNVERIFIED`, `AWAITING_APPROVAL`, `APPROVED` and `REJECTED`, driven there by
+`verifyRun` and `approveRun`/`rejectRun` (`src/app/`). Verification runs this
+project's own test command inside a git worktree isolated from your working tree;
+risk is assessed against `rpt.config.json`, read once as a snapshot taken at each
+run's own start rather than live (see "Threat model" below for exactly what that
+does and does not protect against); and a CRITICAL-risk run has no approval path
+at all. None of `verifyRun`/`approveRun`/`rejectRun` is wired into a CLI command
+yet - `rpt` today only records, lists and replays runs (see "Commands") - but the
+engine underneath is real, not a placeholder, and `rpt.config.json` is a live
+input to it from the moment `rpt init` scaffolds one.
 
 ## Install
 
@@ -48,14 +57,16 @@ file exists and isn't valid JSON, `rpt init` refuses to touch it rather than gue
 adds `.rpt/` to `.gitignore`, and scaffolds two files if they don't already exist:
 
 - `rpt.config.json` - test/coverage commands, sensitive-path globs and risk
-  thresholds. The whole file is inert in Plan 1: `loadConfig` parses and validates
-  it, but nothing calls `loadConfig` anywhere in this codebase yet. It's scaffolded
-  now so the shape is settled for the verification plan that comes next, not
-  because anything reads it today. **Verification, when it runs, executes this
-  project's own test command - arbitrary code chosen by the project, not by rpt -
-  inside a git worktree isolated from your working tree. That isolation is not a
-  sandbox: the command runs with the same OS-level privileges as `rpt` itself, and
-  rpt does not restrict what it can read, write, or reach over the network.**
+  thresholds. This is a live input, not scaffolding: `verifyRun` reads it (via a
+  per-run snapshot, not a live read - see "Threat model") to choose what to run,
+  and `approveRun`/`rejectRun` read it to score risk and decide whether a run is
+  CRITICAL. It is also, unavoidably, owned by the same repository the agent is
+  working in, which is exactly what "Threat model" is about. **Verification, when
+  it runs, executes this project's own test command - arbitrary code chosen by the
+  project, not by rpt - inside a git worktree isolated from your working tree. That
+  isolation is not a sandbox: the command runs with the same OS-level privileges as
+  `rpt` itself, and rpt does not restrict what it can read, write, or reach over
+  the network.**
 - `.rpt/pricing.json` - **ships empty.** rpt does not know what any model costs and
   will not guess. A model with no entry here reports no cost for its usage, not an
   invented one. Fill in `input`, `output`, `cacheRead` and `cacheCreate` (USD per
@@ -156,6 +167,9 @@ per the `.gitignore` line `rpt init` adds):
   runs/
     1/
       events.jsonl        # this run's full, checksummed event log
+      config.json         # rpt.config.json snapshotted at this run's start (src/store/runConfig.ts)
+      verdict.json        # this run's verifyRun outcome, schema-validated and bound to this run's id
+      approval.json       # this run's recorded human decision, if any - same treatment as verdict.json
 ```
 
 ### Recovering from a damaged run index
@@ -209,9 +223,12 @@ never staged, modified, or otherwise touched by taking a snapshot.
 type AgentRun = {
 	id: number;
 	task: string;
-	state: RunState;        // RUNNING or ENDED in this plan
+	state: RunState;        // RUNNING, ENDED, VERIFYING, VERIFIED, FAILED, UNVERIFIED,
+	                         // AWAITING_APPROVAL, APPROVED, REJECTED, or RECORDED
 	baseSha: string | null;
 	endSha: string | null;
+	configFingerprint: string | null;   // fingerprint of this run's config snapshot; null
+	                                     // only for a run recorded before that feature existed
 	startedAt: string;
 	endedAt: string | null;
 	hasGaps: boolean;
@@ -232,28 +249,43 @@ rpt itself.
 
 ### What rpt actually checks before recording a human decision
 
-`approveRun`/`rejectRun` (`src/app/approveRun.ts`) will not record a decision
-without, in order: a cheap pre-check that the caller-supplied `Actor` is not a
-known agent context and claims an interactive terminal; the run's own risk,
-computed from its verdict and its config snapshot (below); and, for any decision
-that reaches that point, a confirmation that must be *typed*, at that moment, at
-the process's controlling terminal (`/dev/tty`, not standard input, so piping or
-redirecting stdin does not satisfy it) - not read from any field the caller
-supplies. That confirmation is bound to the specific run id, decision, verdict
-name and risk level (`confirmationPhrase`): a captured "yes" does not authorise
-a second decision, on this run or any other.
+`approveRun`/`rejectRun` (`src/app/approveRun.ts`) will not record a fresh
+decision without, in order: a cheap pre-check that the caller-supplied `Actor` is
+not a known agent context (an "unknown" context is deliberately *not* refused
+here - it falls through to the confirmation below, which is the actual proof;
+see the comment on `AgentContextSignal` in that file for the full reasoning) and
+claims an interactive terminal; the run's own risk, computed from its verdict and
+its config snapshot (below); and, for any decision that reaches that point, a
+confirmation that must be *typed*, at that moment, at the process's controlling
+terminal (`/dev/tty`, not standard input, so piping or redirecting stdin does not
+satisfy it) - not read from any field the caller supplies. That confirmation is
+bound to the specific run id, decision, verdict name and risk level
+(`confirmationPhrase`): a captured "yes" does not authorise a second decision, on
+this run or any other.
 
 A CRITICAL-risk run has no approval path at all: `decide()` (`src/domain/policy.ts`)
 returns `"block"` for CRITICAL before it even looks at the verdict, and
 `record()`'s only enforcement of that - gated on `decision === "approved"`, since
 rejecting a CRITICAL run is a human saying no, not a sign-off, and must stay
-recordable - is the sole place in the codebase that prohibition is enforced. Its
-limit: the risk level it gates on is computed from a config snapshot taken at
-this run's start (below), not from an unbounded read: a project can still tune
-`rpt.config.json`'s thresholds close to the schema's `[0, 100]` ceiling to make
-CRITICAL hard, if not impossible, to reach honestly, and that edit is itself a
-scored, visible finding (`rpt-config-changed`) rather than a silent one - visible,
-not prevented.
+recordable - is the sole place in the codebase a *fresh* decision enforces that
+prohibition. Its limit: the risk level it gates on is computed from a config
+snapshot taken at this run's start (below), not from an unbounded read: a project
+can still tune `rpt.config.json`'s thresholds close to the schema's `[0, 100]`
+ceiling to make CRITICAL hard, if not impossible, to reach honestly, and that
+edit is itself a scored, visible finding (`rpt-config-changed`) rather than a
+silent one - visible, not prevented.
+
+A run whose approval event exists but whose file does not (an interrupted write)
+is recovered by `healApproval`, a separate, explicitly-named operation - never
+called automatically by `approveRun`/`rejectRun` - with its own, narrower gate:
+it refuses an event claiming CRITICAL risk the same way a fresh decision would,
+and refuses one naming a different verdict than what is actually on disk. Its
+own limit: it checks the level *recorded in the event*, not a fresh assessment
+(re-judging an approval against today's score is a separate rule this project
+does not break), so a forged event that understates its own risk - claims LOW
+when the change was actually CRITICAL - is not caught by this check. Nothing
+about `healApproval` is meant to be stronger than what a fresh decision already
+grants; recovering an interrupted write is the whole of its job.
 
 ### What is, and is not, confined to `.rpt/`
 
@@ -262,15 +294,26 @@ The event log, the verdict, the risk assessment and the approval all live under
 run-id binding on both the verdict and the approval record) so a hand-edited or
 mismatched file is refused rather than trusted. Risk scoring also depends on
 `rpt.config.json` at the repository root - outside `.rpt/`, and just as writable
-by an agent as anything else in the repo. Each run now snapshots the effective
-config once, at its own start (`src/store/runConfig.ts`), and verification and
-approval judge that run against the snapshot, not a live read - so an edit made
-during or after a run no longer changes what that same run is judged against, and
-a live-vs-snapshot drift is itself scored. What this does not close: the snapshot
-for a run is only as trustworthy as whatever `rpt.config.json` already said the
-moment that run started, which a *previous*, already-approved run could have
-poisoned. Closing that would require the config itself to be an append-only,
-independently-reviewed record, which it is not.
+by an agent as anything else in the repo. Each run snapshots the effective config
+once, at its own start (`src/store/runConfig.ts`), and verification and approval
+judge that run against the snapshot, not a live read.
+
+That snapshot is itself verified, not merely consulted: `RunStarted` records a
+fingerprint of it at the moment the run begins, independent of anything that
+happens to the snapshot file afterward. A missing snapshot used to read
+identically to "this run predates the feature" and silently fall back to a live
+read - which also silenced the drift finding meant to expose exactly that,
+since the fallback and the "live" side of the drift comparison were then the
+same read: one removal turning the protection and the alarm off together. A
+run whose `RunStarted` recorded a fingerprint now forces the drift finding
+instead whenever the snapshot is missing, corrupt, or does not match that
+fingerprint - an edit made during or after a run can still not change what that
+run is scored against, and now cannot silence the finding that says so either.
+What this does not close: the snapshot for a run is only as trustworthy as
+whatever `rpt.config.json` already said the moment that run started, which a
+*previous*, already-approved run could have poisoned. Closing that would
+require the config itself to be an append-only, independently-reviewed record,
+which it is not.
 
 ### Why none of this defends against a hostile agent
 
@@ -278,16 +321,19 @@ An agent with write access to the repository has write access to every record
 listed above, the same as any other file it can edit, and to `rpt.config.json`
 itself. Concretely, none of the following require exploiting a bug: an agent can
 write `.rpt/runs/<id>/approval.json` directly, in the exact schema-valid shape a
-real approval takes, without ever calling `approveRun`. It can run inside a
-pseudo-terminal it fully controls (`script`, `expect`, a harness that gives it
-raw shell access), which can make the `isTTY` checks *and* a typed response at
-`/dev/tty` succeed with no human ever involved, if it is willing to script that
-impersonation. Neither of these is exotic: they are what "has write access to the
-repository and can spawn processes" already grants. A checksum chained over
-events, verified by the same machine running the agent, is a speed bump against
-an accidental or careless write, not a defence against a deliberate one - the
-machine that could forge the write can just as easily recompute the chain over
-the forgery.
+real approval takes, without ever calling `approveRun`. It can append a forged
+`ApprovalGranted` event directly to `events.jsonl` and wait for (or itself call)
+`healApproval` - which will refuse a forgery that claims CRITICAL or names the
+wrong verdict, but not one that understates its own risk, as above. It can run
+inside a pseudo-terminal it fully controls (`script`, `expect`, a harness that
+gives it raw shell access), which can make the `isTTY` checks *and* a typed
+response at `/dev/tty` succeed with no human ever involved, if it is willing to
+script that impersonation. None of these are exotic: they are what "has write
+access to the repository and can spawn processes" already grants. A checksum
+chained over events, verified by the same machine running the agent, is a speed
+bump against an accidental or careless write, not a defence against a deliberate
+one - the machine that could forge the write can just as easily recompute the
+chain over the forgery.
 
 What rpt's checks actually raise is the cost of an *unintentional* or *incidental*
 bypass - an agent whose environment happens to look interactive no longer passes

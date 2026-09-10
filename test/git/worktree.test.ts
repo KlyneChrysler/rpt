@@ -1,4 +1,4 @@
-import { readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,15 @@ import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
 async function rptTempDirs(): Promise<string[]> {
 	return (await readdir(tmpdir())).filter((name) => name.startsWith("rpt-wt-"));
+}
+
+async function exists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 describe("openWorktree", () => {
@@ -46,12 +55,17 @@ describe("openWorktree", () => {
 
 	// The temp parent directory is created before `git worktree add` runs, so a
 	// rejected add must not leave it behind - no handle is ever returned for
-	// anyone to dispose it.
+	// anyone to dispose it. Scoped to entries *added* since the snapshot, not
+	// full-set equality against it: this suite's own other tests (and other test
+	// files, run in parallel) open and dispose real worktrees in the same shared
+	// OS temp directory, so an unrelated entry disappearing between the two
+	// snapshots must not trip this assertion the way exact equality would.
 	it("leaves no temp directory behind when the add fails", async () => {
 		const repo = await makeFixtureRepo();
 		const before = await rptTempDirs();
 		await expect(openWorktree(repo, "0000000000000000000000000000000000dead")).rejects.toThrow();
-		expect(await rptTempDirs()).toEqual(before);
+		const after = await rptTempDirs();
+		expect(after.filter((name) => !before.includes(name))).toEqual([]);
 	});
 
 	// A failed `worktree remove` (most commonly a locked worktree) must not leave
@@ -61,11 +75,15 @@ describe("openWorktree", () => {
 	// git rather than a mock.
 	it("clears both the directory and the registration after a failed removal", async () => {
 		const repo = await makeFixtureRepo();
-		const before = await rptTempDirs();
 		const worktree = await openWorktree(repo, await createSnapshot(repo, 1, "end"));
+		const parent = dirname(worktree.path);
 		await git(repo, ["worktree", "lock", worktree.path]);
 		await worktree.dispose();
-		expect(await rptTempDirs()).toEqual(before);
+		// Scoped to the one directory this test created, not a snapshot of the
+		// whole shared OS temp directory - a sibling test file's own worktree,
+		// alive in that directory at the same instant, must not be able to trip
+		// this assertion.
+		expect(await exists(parent)).toBe(false);
 		expect(await git(repo, ["worktree", "list"])).not.toContain(worktree.path);
 	});
 });

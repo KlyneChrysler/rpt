@@ -53,4 +53,37 @@ describe("verifyRun", () => {
 		const { git } = await import("../../src/git/exec.js");
 		expect(await git(repo, ["worktree", "list"])).not.toContain("rpt-wt-");
 	});
+
+	it("is idempotent: a second call returns the recorded verdict, and the log stays readable", async () => {
+		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
+		const first = await verifyRun(repo, 1);
+		const second = await verifyRun(repo, 1);
+		expect(second).toEqual(first);
+		// The bug this guards against didn't fail here - it failed on read: a naive
+		// re-entry appends a second VerificationStarted event, which is an illegal
+		// VERIFYING -> VERIFYING transition that throws on every future projection
+		// of this run's log, not at the point of the mistake.
+		await expect(loadRun(repo, 1)).resolves.toMatchObject({ state: "VERIFYING" });
+	});
+
+	it("refuses to re-verify a run interrupted before any verdict was written", async () => {
+		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
+		const { appendEvent } = await import("../../src/store/eventLog.js");
+		const { rptDirOf } = await import("../../src/store/paths.js");
+		// Simulates a crash between appending VerificationStarted and writing a
+		// verdict: the run is stuck in VERIFYING with nothing on disk to recover.
+		await appendEvent(rptDirOf(repo), 1, { ts: new Date().toISOString(), source: "rpt", kind: "VerificationStarted", payload: {} });
+		await expect(verifyRun(repo, 1)).rejects.toThrow(/interrupted/);
+	});
+
+	it("propagates the real failure rather than a worktree disposal failure, and still disposes the worktree", async () => {
+		const repo = await repoWithRun({ "a.ts": "1\n" }, ["a.ts"]);
+		// Corrupts config *after* the run ended, so verifyRun's own read of it
+		// (inside the try block, after the worktree is already open) is what fails
+		// - not something earlier that would never reach the disposal guard at all.
+		await writeFile(join(repo, "rpt.config.json"), "{ not json");
+		await expect(verifyRun(repo, 1)).rejects.toThrow(/rpt\.config\.json is unreadable/);
+		const { git } = await import("../../src/git/exec.js");
+		expect(await git(repo, ["worktree", "list"])).not.toContain("rpt-wt-");
+	});
 });

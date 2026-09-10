@@ -2,7 +2,7 @@ import { fingerprintOf } from "../domain/checksum.js";
 import { isValidApproverName, type Approval, type ApprovalDecision, type RiskContribution } from "../domain/approval.js";
 import type { AgentEvent, EventKind, RunId } from "../domain/events.js";
 import { decide, RISK_LEVELS, type RiskLevel } from "../domain/policy.js";
-import { applyApprovalDecision } from "../domain/run.js";
+import { applyApprovalDecision, isValidApprovalEvent } from "../domain/run.js";
 import type { Verdict, VerdictName } from "../domain/verdict.js";
 import { assessRisk } from "../risk/assess.js";
 import { buildFacts } from "../risk/facts.js";
@@ -156,20 +156,39 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 	// someone else recorded a decision in the time between this call's own
 	// earlier checks and this append; refuse rather than also writing a
 	// second file over what just became the real record.
-	const result = await appendEventIfNoneOfKind(rptDir, runId, APPROVAL_EVENT_KINDS, {
-		ts: approval.at,
-		source: "rpt",
-		kind: decision === "approved" ? "ApprovalGranted" : "ApprovalDenied",
-		payload: {
-			by: approval.by,
-			override: approval.override,
-			level,
-			score,
-			contributions,
-			configFingerprint,
-			verdictName: verdict.name,
+	//
+	// isValidApprovalEvent, not a bare kind match, decides what counts as a
+	// real conflict: a single malformed approval-kind event (an invalid
+	// verdict name, say) that the reducer's own fold already gaps rather
+	// than applies used to wedge every future decision here - refused with
+	// "already has a recorded decision", which was false, since nothing had
+	// actually been recorded - while healApproval separately, correctly,
+	// found nothing valid to heal from, leaving no path forward at all.
+	// run.state, captured before this call reached this point, is already
+	// proof no *valid* approval-kind event exists yet (applyApprovalDecision
+	// above would have thrown otherwise), so any matching-kind event found
+	// here that does not itself validly apply from that same state is noise
+	// the fold already rejected, not a real decision to defer to.
+	const result = await appendEventIfNoneOfKind(
+		rptDir,
+		runId,
+		APPROVAL_EVENT_KINDS,
+		{
+			ts: approval.at,
+			source: "rpt",
+			kind: decision === "approved" ? "ApprovalGranted" : "ApprovalDenied",
+			payload: {
+				by: approval.by,
+				override: approval.override,
+				level,
+				score,
+				contributions,
+				configFingerprint,
+				verdictName: verdict.name,
+			},
 		},
-	});
+		(event) => isValidApprovalEvent(run.state, event),
+	);
 	if (result.appended === null) {
 		throw new Error(`run ${runId} already has a recorded decision`);
 	}
@@ -181,29 +200,46 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 
 // Healing is an explicit, separately-named operation with its own contract,
 // not a branch of record() that a caller falls into by retrying
-// approveRun/rejectRun with the same arguments. Three rounds running, the
+// approveRun/rejectRun with the same arguments. Four rounds running, the
 // critical prohibition kept being enforced at one call site and then found
-// reachable through another - first record() never consulted risk at all,
-// then the confirmation lived beside the gate instead of inside it, then
-// this function's old implicit form returned a recorded approval before
-// risk was computed, before the gate, and without asking anyone anything:
-// a forged event claiming CRITICAL risk and a name that was never present
-// turned into a genuine-looking approval.json the moment anyone next called
-// approveRun for that run. Splitting healing into its own named function,
-// deliberately never called by record(), means skipping the checks below is
-// something a person has to write down on purpose, not something reached by
-// passing the same arguments twice.
+// reachable through another - record() never consulted risk at all, then
+// the confirmation lived beside the gate instead of inside it, then this
+// function's old implicit form returned a recorded approval before risk was
+// computed and before the gate, and then - the general lesson worth
+// keeping - splitting record() into two functions moved the checks that
+// used to guard both paths (the actor argument, assertHuman, the approver
+// allowlist, the typed confirmation) onto only the one the author was
+// looking at. healApproval had none of them: an unambiguous agent context,
+// no terminal, and a terminal reader rigged to throw were all still enough
+// to heal a forged event naming a human who was never present, at a risk
+// level the run did not have. It now takes the same Actor and runs the
+// same assertHuman/approver-name checks record() does, plus the same typed
+// confirmation - built from the level and verdict *recorded in the event*,
+// not a fresh assessment, which asks nothing new of the risk engine and
+// breaks no rule about not re-judging a decision against today's score.
 //
-// Gated on the level and verdict name recorded in the event itself, never a
-// fresh assessment: re-computing today's risk here would break the rule
-// that an approval is never re-judged against today's score. This is a
-// different check - it validates that what is being healed never should
-// have been written in the first place, using only what the event itself
-// claims, the same invariant record()'s fresh path enforces at write time.
-// No confirmation is asked either, for the same reason: both already ran
-// when the event was first written; asking again would prove nothing new
-// about who is calling healApproval right now.
-export async function healApproval(repoRoot: string, runId: RunId, decision: ApprovalDecision): Promise<Approval> {
+// What healing asks for once that is true, stated plainly rather than
+// framed as "not meant to be stronger than a fresh decision" (a framing
+// that used a genuinely narrow, unclosable limit to quietly cover a much
+// wider, avoidable gap): a fresh decision requires a non-agent actor, an
+// allowlisted approver name, and a typed phrase bound to a fresh
+// assessment. Healing now requires the same actor, the same name check,
+// and the same typed phrase - bound to the recorded assessment instead of
+// a fresh one, and additionally checks the event's verdict name and config
+// fingerprint against what is actually on disk (see below), which a fresh
+// decision has no analogous check for, because a fresh decision does not
+// read a historical claim at all. The one thing that remains genuinely
+// unclosable: a human confirming a heal cannot re-derive the recorded
+// level from recorded data alone - they are trusting that the level in
+// the event once came from a real assessment, the same way anyone reading
+// any historical record trusts it was accurate when written. That is the
+// actual residual gap, and it is narrow.
+export async function healApproval(repoRoot: string, runId: RunId, actor: Actor, decision: ApprovalDecision): Promise<Approval> {
+	assertHuman(actor);
+	if (!isValidApproverName(actor.name)) {
+		throw new Error("approver name is empty, too long, or contains a disallowed character");
+	}
+
 	const rptDir = rptDirOf(repoRoot);
 	if ((await readApproval(repoRoot, runId)) !== null) {
 		throw new Error(`run ${runId} already has a recorded decision`);
@@ -220,9 +256,27 @@ export async function healApproval(repoRoot: string, runId: RunId, decision: App
 
 	const approval = await approvalFromRecordedEvent(rptDir, runId, decision, verdict);
 
+	// The fields the record exists to make drift detectable with are not
+	// trusted just because they have the right shape: configFingerprint must
+	// match either what this run's own RunStarted recorded, or what
+	// resolving this run's config produces right now - not merely "any
+	// string that looks like a fingerprint". A forged event can no longer
+	// invent a fingerprint that was never real.
+	const currentResolve = await resolveRunConfig(repoRoot, run);
+	const acceptableFingerprints = new Set(
+		[run.configFingerprint, fingerprintOf(currentResolve.config)].filter((value): value is string => value !== null),
+	);
+	if (!acceptableFingerprints.has(approval.configFingerprint)) {
+		throw new Error(
+			`run ${runId}'s recorded event's config fingerprint matches neither this run's own recorded fingerprint nor what resolving its config now produces; refusing to heal from it`,
+		);
+	}
+
 	if (decision === "approved" && decide(verdict.name, approval.level) === "block") {
 		throw new Error(`run ${runId}'s recorded event claims CRITICAL risk; refusing to heal it as an approval`);
 	}
+
+	await requireTypedConfirmation(runId, decision, verdict.name, approval.level);
 
 	await writeApproval(rptDir, approval);
 	await upsertRun(rptDir, { id: runId, task: run.task, state: outcomeState, startedAt: run.startedAt, endedAt: run.endedAt });
@@ -242,15 +296,21 @@ async function approvalFromRecordedEvent(rptDir: string, runId: RunId, decision:
 function approvalFromEventPayload(runId: RunId, decision: ApprovalDecision, event: AgentEvent, verdict: Verdict): Approval {
 	const by = typeof event.payload.by === "string" ? event.payload.by : null;
 	const level = riskLevelOf(event.payload.level);
-	const score = typeof event.payload.score === "number" ? event.payload.score : null;
+	const score = validScoreOf(event.payload.score);
+	// A genuine assessment always contributes at least one of "tests-passed"
+	// or "tests-unknown-or-failing" (risk/rules.ts): those two are mutually
+	// exhaustive over testResult's three possible values, so an empty
+	// contributions array is not a thin real assessment, it is one the
+	// recorder could never have produced.
 	const contributions = riskContributionsOf(event.payload.contributions);
-	const configFingerprint = typeof event.payload.configFingerprint === "string" ? event.payload.configFingerprint : null;
+	const configFingerprint = validFingerprintFormatOf(event.payload.configFingerprint);
 	if (
 		by === null ||
 		!isValidApproverName(by) ||
 		level === null ||
 		score === null ||
 		contributions === null ||
+		contributions.length === 0 ||
 		configFingerprint === null ||
 		!isValidTimestamp(event.ts)
 	) {
@@ -297,6 +357,23 @@ function isValidTimestamp(value: string): boolean {
 
 function riskLevelOf(value: unknown): RiskLevel | null {
 	return (RISK_LEVELS as readonly unknown[]).includes(value) ? (value as RiskLevel) : null;
+}
+
+// assessRisk (risk/assess.ts) always clamps to [0, 100]; a real score can
+// never fall outside that range.
+function validScoreOf(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+}
+
+// A real configFingerprint is always a sha256 hex digest (fingerprintOf,
+// domain/checksum.ts) - 64 lowercase hex characters, never an arbitrary
+// string. Format alone does not prove it is *this run's* real fingerprint
+// (see healApproval's separate match check against the run's recorded
+// fingerprint or a current resolve), but it rules out the cheap forgery of
+// just writing any string in its place.
+const FINGERPRINT_RE = /^[0-9a-f]{64}$/;
+function validFingerprintFormatOf(value: unknown): string | null {
+	return typeof value === "string" && FINGERPRINT_RE.test(value) ? value : null;
 }
 
 function riskContributionsOf(value: unknown): RiskContribution[] | null {

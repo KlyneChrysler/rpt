@@ -15,6 +15,8 @@ import {
 import { initRepo } from "../../src/app/initRepo.js";
 import { readFromControllingTerminal } from "../../src/app/terminalConfirm.js";
 import { readVerdict, verifyRun } from "../../src/app/verifyRun.js";
+import { DEFAULT_CONFIG } from "../../src/config/load.js";
+import { fingerprintOf } from "../../src/domain/checksum.js";
 import { writeApproval } from "../../src/store/approvals.js";
 import { appendEvent, MAX_PAYLOAD_BYTES } from "../../src/store/eventLog.js";
 import { rptDirOf, runDirOf } from "../../src/store/paths.js";
@@ -23,6 +25,13 @@ import { makeFixtureRepo } from "../support/fixtureRepo.js";
 
 const human: Actor = { name: "klyne", interactive: true, agentContext: "human" };
 const agent: Actor = { name: "claude", interactive: false, agentContext: "agent" };
+
+// The fixtures below never touch rpt.config.json, so every real assessment
+// against them - and therefore every recorded event's own configFingerprint
+// - is DEFAULT_CONFIG's. Used as the default here so a forged-event test
+// that does not care about the fingerprint check still passes it, the same
+// way a real event would.
+const REAL_CONFIG_FINGERPRINT = fingerprintOf(DEFAULT_CONFIG);
 
 // Every real interactive path in record() now requires a typed confirmation.
 // The default behaviour here mirrors what a human actually does with the
@@ -49,7 +58,7 @@ function approvalEventPayload(overrides: Record<string, unknown>): Record<string
 		level: "LOW",
 		score: 3,
 		contributions: [{ id: "files-changed-count", label: "Files changed", points: 3 }],
-		configFingerprint: "deadbeef",
+		configFingerprint: REAL_CONFIG_FINGERPRINT,
 		...overrides,
 	};
 }
@@ -220,6 +229,26 @@ describe("approveRun", () => {
 		});
 		await expect(rejectRun(repo, 1, human)).rejects.toThrow();
 	});
+
+	// The wedge this closes: a single junk approval-kind event (here, one
+	// naming a verdict the fold does not recognise, so it gaps rather than
+	// applies) used to permanently block every future decision - record()
+	// refused with "already has a recorded decision" (false: nothing had
+	// actually been recorded) and healApproval separately refused with
+	// "nothing to recover" (true, but leaving no path forward either way). A
+	// genuine decision now proceeds past a junk event rather than deferring
+	// to it.
+	it("proceeds past a junk approval event the fold already rejected, rather than being wedged by it", async () => {
+		const repo = await verifiedRepo();
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", verdictName: "NONSENSE" }),
+		});
+		const approval = await approveRun(repo, 1, human);
+		expect(approval.decision).toBe("approved");
+	});
 });
 
 describe("healApproval", () => {
@@ -236,9 +265,77 @@ describe("healApproval", () => {
 			kind: "ApprovalGranted",
 			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
 		});
-		const approval = await healApproval(repo, 1, "approved");
+		const approval = await healApproval(repo, 1, human, "approved");
 		expect(approval.decision).toBe("approved");
 		expect(await readApproval(repo, 1)).not.toBeNull();
+	});
+
+	// The Critical this round found: splitting healing out of record() moved
+	// the actor argument, assertHuman, the approver allowlist and the typed
+	// confirmation onto only the recording half. healApproval had none of
+	// them - an agent context, no terminal and a terminal reader rigged to
+	// throw were all still enough to heal a forged event. It now takes the
+	// same Actor and runs the same checks.
+	it("refuses an actor running inside a known agent context, even with a real event to heal from", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
+		});
+		await expect(healApproval(repo, 1, agent, "approved")).rejects.toThrow(/human/i);
+		expect(await readApproval(repo, 1)).toBeNull();
+	});
+
+	it("refuses an invalid approver name on the healing call, even with a real event to heal from", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
+		});
+		const forger: Actor = { name: "klyne\nrpt: FORGED LINE", interactive: true, agentContext: "human" };
+		await expect(healApproval(repo, 1, forger, "approved")).rejects.toThrow(/disallowed character/i);
+	});
+
+	// Inverted from the previous round's assertion that the confirmation was
+	// never read on a heal - that was true only because healing had no
+	// confirmation at all. It now requires one, bound to the *recorded*
+	// level and verdict (not a fresh assessment, which would break the
+	// never-re-judge rule).
+	it("requires the mandatory typed confirmation, bound to the recorded level and verdict, to heal", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: "2020-01-01T00:00:00.000Z",
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "the-original-approver", level: "LOW", verdictName: verdict?.name }),
+		});
+		await healApproval(repo, 1, human, "approved");
+		expect(readFromControllingTerminal).toHaveBeenCalledTimes(1);
+		const prompt = vi.mocked(readFromControllingTerminal).mock.calls[0]?.[0];
+		expect(prompt).toContain("approved");
+		expect(prompt).toContain(verdict?.name);
+		expect(prompt).toContain("LOW");
+	});
+
+	it("refuses to heal when the typed confirmation does not match", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
+		});
+		vi.mocked(readFromControllingTerminal).mockResolvedValue("yes");
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow(/did not match/i);
+		expect(await readApproval(repo, 1)).toBeNull();
 	});
 
 	it("heals from the event's own recorded payload, not from any live input", async () => {
@@ -250,15 +347,15 @@ describe("healApproval", () => {
 			kind: "ApprovalGranted",
 			payload: approvalEventPayload({ by: "the-original-approver", verdictName: verdict?.name }),
 		});
-		const approval = await healApproval(repo, 1, "approved");
+		// A different human confirms the recovery; the record still names the
+		// original approver, not whoever completed the write.
+		const retryer: Actor = { name: "someone-else", interactive: true, agentContext: "human" };
+		const approval = await healApproval(repo, 1, retryer, "approved");
 		expect(approval.by).toBe("the-original-approver");
 		expect(approval.at).toBe("2020-01-01T00:00:00.000Z");
 		expect(approval.score).toBe(3);
 		expect(approval.contributions).toEqual([{ id: "files-changed-count", label: "Files changed", points: 3 }]);
-		expect(approval.configFingerprint).toBe("deadbeef");
-		// No confirmation is asked on a heal - it already ran when the event
-		// was first written.
-		expect(readFromControllingTerminal).not.toHaveBeenCalled();
+		expect(approval.configFingerprint).toBe(REAL_CONFIG_FINGERPRINT);
 	});
 
 	it("does not re-run the critical gate, even if today's live score would now block it", async () => {
@@ -271,10 +368,8 @@ describe("healApproval", () => {
 		const { rm } = await import("node:fs/promises");
 		const { approvalPathOf } = await import("../../src/store/paths.js");
 		await rm(approvalPathOf(rptDirOf(repo), 1));
-		vi.mocked(readFromControllingTerminal).mockClear();
-		const approval = await healApproval(repo, 1, "approved");
+		const approval = await healApproval(repo, 1, human, "approved");
 		expect(approval.decision).toBe("approved");
-		expect(readFromControllingTerminal).not.toHaveBeenCalled();
 	});
 
 	// The Critical this round found: the old implicit heal reconstructed an
@@ -292,7 +387,7 @@ describe("healApproval", () => {
 			kind: "ApprovalGranted",
 			payload: approvalEventPayload({ by: "attacker-forged-name", level: "CRITICAL", verdictName: verdict?.name }),
 		});
-		await expect(healApproval(repo, 1, "approved")).rejects.toThrow(/CRITICAL/);
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow(/CRITICAL/);
 		expect(await readApproval(repo, 1)).toBeNull();
 	});
 
@@ -305,7 +400,7 @@ describe("healApproval", () => {
 			kind: "ApprovalDenied",
 			payload: approvalEventPayload({ by: "klyne", level: "CRITICAL", verdictName: verdict?.name }),
 		});
-		const rejection = await healApproval(repo, 1, "rejected");
+		const rejection = await healApproval(repo, 1, human, "rejected");
 		expect(rejection.decision).toBe("rejected");
 	});
 
@@ -322,7 +417,7 @@ describe("healApproval", () => {
 			kind: "ApprovalGranted",
 			payload: approvalEventPayload({ by: "klyne", verdictName: wrongVerdictName }),
 		});
-		await expect(healApproval(repo, 1, "approved")).rejects.toThrow(/verdict/i);
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow(/verdict/i);
 		expect(await readApproval(repo, 1)).toBeNull();
 	});
 
@@ -341,7 +436,7 @@ describe("healApproval", () => {
 			// not VERIFIED.
 			payload: approvalEventPayload({ by: "klyne", override: false, verdictName: verdict?.name }),
 		});
-		const approval = await healApproval(repo, 1, "approved");
+		const approval = await healApproval(repo, 1, human, "approved");
 		expect(approval.override).toBe(true);
 	});
 
@@ -354,12 +449,69 @@ describe("healApproval", () => {
 			kind: "ApprovalGranted",
 			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
 		});
-		await expect(healApproval(repo, 1, "approved")).rejects.toThrow();
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow();
+		expect(await readApproval(repo, 1)).toBeNull();
+	});
+
+	// The fields the record exists to make drift detectable with are not
+	// trusted just because they have the right JavaScript type: "any string
+	// as a config fingerprint, any score, an empty contribution set" is
+	// exactly what the recorder could never have written.
+	it("refuses a config fingerprint that is not a real fingerprint's shape", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", configFingerprint: "not-a-real-fingerprint", verdictName: verdict?.name }),
+		});
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow();
+		expect(await readApproval(repo, 1)).toBeNull();
+	});
+
+	it("refuses a config fingerprint that has the right shape but matches neither the run's own fingerprint nor a current resolve", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		const someOtherRealLookingFingerprint = fingerprintOf({ not: "this run's config" });
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", configFingerprint: someOtherRealLookingFingerprint, verdictName: verdict?.name }),
+		});
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow(/fingerprint/i);
+		expect(await readApproval(repo, 1)).toBeNull();
+	});
+
+	it("refuses a score outside the [0, 100] range assessRisk can ever produce", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", score: 1000, verdictName: verdict?.name }),
+		});
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow();
+		expect(await readApproval(repo, 1)).toBeNull();
+	});
+
+	it("refuses an empty contributions array - a real assessment always contributes at least one entry", async () => {
+		const repo = await verifiedRepo();
+		const verdict = await readVerdict(repo, 1);
+		await appendEvent(rptDirOf(repo), 1, {
+			ts: new Date().toISOString(),
+			source: "rpt",
+			kind: "ApprovalGranted",
+			payload: approvalEventPayload({ by: "klyne", contributions: [], verdictName: verdict?.name }),
+		});
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow();
 		expect(await readApproval(repo, 1)).toBeNull();
 	});
 
 	it("refuses when there is nothing to heal", async () => {
-		await expect(healApproval(await verifiedRepo(), 1, "approved")).rejects.toThrow(/nothing to recover/i);
+		await expect(healApproval(await verifiedRepo(), 1, human, "approved")).rejects.toThrow(/nothing to recover/i);
 	});
 
 	it("refuses to heal a run twice", async () => {
@@ -371,8 +523,8 @@ describe("healApproval", () => {
 			kind: "ApprovalGranted",
 			payload: approvalEventPayload({ by: "klyne", verdictName: verdict?.name }),
 		});
-		await healApproval(repo, 1, "approved");
-		await expect(healApproval(repo, 1, "approved")).rejects.toThrow(/already/i);
+		await healApproval(repo, 1, human, "approved");
+		await expect(healApproval(repo, 1, human, "approved")).rejects.toThrow(/already/i);
 	});
 });
 

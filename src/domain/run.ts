@@ -19,6 +19,13 @@ export type AgentRun = {
 	state: RunState;
 	baseSha: string | null;
 	endSha: string | null;
+	// A fingerprint of the config snapshot taken at this run's start (see
+	// src/app/loadRunConfig.ts), null only for a run recorded before that
+	// snapshot existed. Read from RunStarted's own payload so it is bound to
+	// the moment the run began, not to whatever the snapshot file currently
+	// contains - the two are compared to detect a missing or altered
+	// snapshot rather than silently trusting either one alone.
+	configFingerprint: string | null;
 	startedAt: string;
 	endedAt: string | null;
 	hasGaps: boolean;
@@ -41,6 +48,7 @@ function seedFrom(id: RunId, started: AgentEvent, events: readonly AgentEvent[])
 		state: "RUNNING",
 		baseSha: asStringOrNull(started.payload.baseSha),
 		endSha: null,
+		configFingerprint: asStringOrNull(started.payload.configFingerprint),
 		startedAt: started.ts,
 		endedAt: null,
 		hasGaps: false,
@@ -79,16 +87,16 @@ function apply(run: AgentRun, event: AgentEvent): AgentRun {
 		case "GapRecorded":
 			return { ...run, hasGaps: true };
 		case "VerificationStarted":
-			return { ...run, state: transition(run.state, "VERIFYING") };
+			return withGapOnIllegalTransition(run, () => ({ ...run, state: transition(run.state, "VERIFYING") }));
 		case "VerifierCompleted":
 			return run;
 		case "AgentStopped":
-			return {
+			return withGapOnIllegalTransition(run, () => ({
 				...run,
 				state: transition(run.state, "ENDED"),
 				endedAt: event.ts,
 				endSha: asStringOrNull(event.payload.endSha),
-			};
+			}));
 		case "ApprovalGranted":
 			return applyApprovalEvent(run, event.payload, "approved");
 		case "ApprovalDenied":
@@ -98,28 +106,35 @@ function apply(run: AgentRun, event: AgentEvent): AgentRun {
 	}
 }
 
-// A duplicate or malformed approval event must not make the run permanently
-// unloadable: before this, an illegal transition (a second approval event,
+// A duplicate or out-of-order event must not make the run permanently
+// unloadable: before this, an illegal transition (two AgentStopped events, a
+// VerificationStarted with nothing to verify yet, a second approval event,
 // or one naming a verdict this run's history disagrees with) threw straight
-// out of the fold, so the one place a decision is recorded became the
-// cheapest possible denial of service against itself - a single bad or
-// replayed event, and the run could never be loaded, statused or decided
-// again. Folding such an event into hasGaps instead - the same treatment a
-// torn or unparseable line already gets in eventLog.ts - keeps the run's
-// last legitimate state visible and flags the anomaly rather than hiding it
-// behind a crash. src/app/approveRun.ts's own precondition check still calls
+// out of the fold, so the one place a decision is recorded - and, it turned
+// out, several earlier states along the way - became the cheapest possible
+// denial of service against itself: a single bad or replayed event, and the
+// run could never be loaded, statused or decided again. Every case that
+// calls transition() is wrapped the same way, folding the event into
+// hasGaps instead - the same treatment a torn or unparseable line already
+// gets in eventLog.ts - so the run's last legitimate state stays visible
+// and the anomaly is flagged rather than hidden behind a crash.
+// src/app/approveRun.ts's own precondition check still calls
 // applyApprovalDecision directly and still throws: that call is validating a
 // fresh, live request, not tolerantly folding a log that may already contain
 // imperfect history, and the two have different correct answers to "what do
 // I do with an illegal transition" for exactly that reason.
-function applyApprovalEvent(run: AgentRun, payload: Record<string, unknown>, decision: ApprovalDecision): AgentRun {
-	const verdictName = verdictNameOfSafe(payload);
-	if (verdictName === null) return { ...run, hasGaps: true };
+function withGapOnIllegalTransition(run: AgentRun, apply: () => AgentRun): AgentRun {
 	try {
-		return { ...run, state: applyApprovalDecision(run.state, verdictName, decision) };
+		return apply();
 	} catch {
 		return { ...run, hasGaps: true };
 	}
+}
+
+function applyApprovalEvent(run: AgentRun, payload: Record<string, unknown>, decision: ApprovalDecision): AgentRun {
+	const verdictName = verdictNameOfSafe(payload);
+	if (verdictName === null) return { ...run, hasGaps: true };
+	return withGapOnIllegalTransition(run, () => ({ ...run, state: applyApprovalDecision(run.state, verdictName, decision) }));
 }
 
 // Shared with src/app/approveRun.ts, which calls this directly to decide

@@ -18,6 +18,16 @@ describe("projectRun", () => {
 		expect(run.baseSha).toBe("abc");
 	});
 
+	it("carries the config fingerprint from RunStarted's payload", () => {
+		const run = projectRun(1, log(draft("RunStarted", { task: "t", baseSha: "abc", configFingerprint: "deadbeef" })));
+		expect(run.configFingerprint).toBe("deadbeef");
+	});
+
+	it("reports a null config fingerprint for a run recorded before the snapshot existed", () => {
+		const run = projectRun(1, log(draft("RunStarted", { task: "t", baseSha: "abc" })));
+		expect(run.configFingerprint).toBeNull();
+	});
+
 	it("collects mutated paths as claims without deduplicating order away", () => {
 		const run = projectRun(
 			1,
@@ -47,6 +57,31 @@ describe("projectRun", () => {
 		);
 		expect(run.state).toBe("ENDED");
 		expect(run.endSha).toBe("def");
+	});
+
+	// Regression: a second AgentStopped event used to throw an
+	// IllegalTransitionError straight out of the fold, bricking the run the
+	// same way a duplicate approval event did - the reviewer demonstrated
+	// exactly this against the built binary. Gapped instead, with the first,
+	// legitimate AgentStopped's state and endSha preserved.
+	it("gaps rather than throws on a second AgentStopped event, keeping the first one's state", () => {
+		const run = projectRun(
+			1,
+			log(
+				draft("RunStarted", { task: "t", baseSha: "abc" }),
+				draft("AgentStopped", { endSha: "def" }),
+				draft("AgentStopped", { endSha: "ghi" }),
+			),
+		);
+		expect(run.hasGaps).toBe(true);
+		expect(run.state).toBe("ENDED");
+		expect(run.endSha).toBe("def");
+	});
+
+	it("gaps rather than throws on a VerificationStarted event with nothing to verify yet", () => {
+		const run = projectRun(1, log(draft("RunStarted", { task: "t", baseSha: "abc" }), draft("VerificationStarted", {})));
+		expect(run.hasGaps).toBe(true);
+		expect(run.state).toBe("RUNNING");
 	});
 
 	it("marks the run as gapped when a GapRecorded is present", () => {

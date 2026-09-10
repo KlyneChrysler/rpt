@@ -44,9 +44,18 @@ export function buildFacts(results: readonly VerifierResult[], config: RptConfig
 	};
 }
 
+// Case-insensitive on purpose: macOS and Windows resolve paths without
+// regard to case, so a sensitive directory or file renamed only in its
+// casing is still the same file on disk, still in scope, and must still
+// match. Matching case-sensitively would let such a rename silently drop
+// out of sensitiveMatches while nothing about the file's real location
+// changed - under-matching lowers a risk score for the exact class of
+// change the score exists to catch. Case-insensitive matching can only
+// over-match instead, which can only raise a score, and over-matching is
+// the direction this project accepts being wrong in.
 function matchSensitive(paths: readonly string[], config: RptConfig): SensitiveMatch[] {
 	return Object.entries(config.sensitivePaths)
-		.map(([category, globs]) => ({ category, paths: paths.filter(picomatch(globs, { dot: true })) }))
+		.map(([category, globs]) => ({ category, paths: paths.filter(picomatch(globs, { dot: true, nocase: true })) }))
 		.filter((match) => match.paths.length > 0);
 }
 
@@ -74,7 +83,7 @@ function scanResultOf(results: readonly VerifierResult[]): RunFacts["scanResult"
 // reading, since rpt never observed a single line's execution result.
 function coverageOf(results: readonly VerifierResult[]): { fraction: number | null; measured: number; covered: number } {
 	const facts = factsOf(results, "test-quality");
-	const fraction = typeof facts.changeCoverage === "number" ? facts.changeCoverage : null;
+	const fraction = isFiniteNumber(facts.changeCoverage) ? facts.changeCoverage : null;
 	return { fraction, measured: numberOf(facts.changedLineCount), covered: numberOf(facts.coveredLineCount) };
 }
 
@@ -90,6 +99,16 @@ function stringsOf(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+// A NaN or Infinity from a malformed verifier is not "unknown" in the type
+// system's eyes (typeof still says "number"), but it is exactly as
+// unusable as a missing value - a helper elsewhere in this plan has already
+// shipped one into a published count. Treated the same way a missing
+// number is: the pessimistic default, not a value that silently poisons
+// downstream arithmetic.
 function numberOf(value: unknown): number {
-	return typeof value === "number" ? value : 0;
+	return isFiniteNumber(value) ? value : 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
 }

@@ -31,6 +31,23 @@ describe("buildFacts", () => {
 		expect(facts.sensitiveMatches).toEqual([]);
 	});
 
+	it("matches a sensitive directory renamed only in its casing", () => {
+		// macOS and Windows are case-insensitive filesystems: "src/Auth/pool.ts"
+		// and "src/auth/pool.ts" are the same file on disk. Matching
+		// case-sensitively would let a rename silently drop out of
+		// sensitiveMatches while the file itself never moved - lowering a risk
+		// score for exactly the change the score exists to catch.
+		const facts = buildFacts([diffResult({ observedPaths: ["src/Auth/pool.ts"], undeclared: [], manifestChanged: false, added: 1, removed: 0 })], DEFAULT_CONFIG);
+		expect(facts.sensitiveMatches.map((match) => match.category)).toEqual(["auth"]);
+	});
+
+	it("matches a sensitive path renamed only in its extension's casing", () => {
+		// Outside infra/ on purpose, so this can only pass via the "**/*.tf"
+		// glob's own case handling, not by also satisfying "infra/**".
+		const facts = buildFacts([diffResult({ observedPaths: ["modules/network/main.TF"], undeclared: [], manifestChanged: false, added: 1, removed: 0 })], DEFAULT_CONFIG);
+		expect(facts.sensitiveMatches.map((match) => match.category)).toEqual(["infra"]);
+	});
+
 	it("carries undeclared files through", () => {
 		const facts = buildFacts([diffResult({ observedPaths: ["a.ts"], undeclared: ["a.ts"], manifestChanged: false, added: 1, removed: 0 })], DEFAULT_CONFIG);
 		expect(facts.undeclaredFiles).toEqual(["a.ts"]);
@@ -106,5 +123,26 @@ describe("buildFacts", () => {
 		const facts = buildFacts([diffResult({ observedPaths: null, undeclared: [], manifestChanged: false, added: 0, removed: 0 })], DEFAULT_CONFIG);
 		expect(facts.pathsChanged).toEqual([]);
 		expect(facts.fileCount).toBe(0);
+	});
+
+	it("treats non-finite added and removed counts as the pessimistic zero", () => {
+		// A verifier could in principle publish NaN or Infinity where a real
+		// line count belongs (it has happened elsewhere in this plan). Treat it
+		// the same as a missing number rather than letting it propagate.
+		const facts = buildFacts([diffResult({ observedPaths: [], undeclared: [], manifestChanged: false, added: Number.NaN, removed: Number.POSITIVE_INFINITY })], DEFAULT_CONFIG);
+		expect(facts.linesAdded).toBe(0);
+		expect(facts.linesRemoved).toBe(0);
+	});
+
+	it("reports null change coverage when the fraction is non-finite", () => {
+		const quality = qualityResult("passed", { changedLineCount: 4, coveredLineCount: 4, changeCoverage: Number.NaN });
+		expect(buildFacts([emptyDiff, quality], DEFAULT_CONFIG).changeCoverage).toBeNull();
+	});
+
+	it("reports zero measured and covered lines when the counts are non-finite", () => {
+		const quality = qualityResult("passed", { changedLineCount: Number.POSITIVE_INFINITY, coveredLineCount: Number.NaN, changeCoverage: 1 });
+		const facts = buildFacts([emptyDiff, quality], DEFAULT_CONFIG);
+		expect(facts.changeCoverageLinesMeasured).toBe(0);
+		expect(facts.changeCoverageLinesCovered).toBe(0);
 	});
 });

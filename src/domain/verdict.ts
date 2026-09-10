@@ -1,7 +1,11 @@
 import type { RunId } from "./events.js";
 import type { VerifierResult } from "./verifierResult.js";
 
-export type VerdictName = "VERIFIED" | "FAILED" | "UNVERIFIED";
+// Runtime-derived for the same reason RUN_STATES and RISK_LEVELS are: the
+// store layer validates a verdict read back from disk against a real value,
+// not a second hand-copied list of the same three strings.
+export const VERDICT_NAMES = ["VERIFIED", "FAILED", "UNVERIFIED"] as const;
+export type VerdictName = (typeof VERDICT_NAMES)[number];
 
 export type Verdict = {
 	runId: RunId;

@@ -1,48 +1,47 @@
 # rpt
 
-**An AI coding agent grades its own homework. rpt is the second opinion.**
+**Your AI agent reports its own results. rpt checks them.**
 
-An agent says "I fixed the bug, 184 tests pass, 7 files changed." That sentence
-is produced by the same system that made the change. Nothing outside the agent
-confirms any of it.
+"I fixed the bug, 184 tests pass, 7 files changed." That sentence was written by
+the same system that made the change. Nothing outside the agent confirms it.
 
-rpt watches a Claude Code session from the outside, re-derives the facts itself
-by asking git and by running your tests, scores how risky the change is, and
-stops the commit when a human should look. Then it staples the verdict to the
-commit as a git note, so the record travels with the code.
+rpt watches a Claude Code session from the outside. It asks git what actually
+changed, runs your test suite itself, scores the risk, and stops the commit when
+a person should look. The verdict is attached to the commit as a git note, so it
+travels with the code.
 
-It never takes the agent's word for anything. Claims and observations are kept
-apart on purpose.
+What the agent claims is recorded but never trusted. The claims have exactly one
+job: revealing the files the agent changed and did not mention.
 
 ---
 
 ## It stops a commit that needs you
 
-Your normal `git commit`. No new command to remember.
+This is `git commit`. There is no new command to run.
 
-![The commit gate refusing a commit](docs/media/gate.png)
+![rpt refusing a commit that needs human approval](docs/media/gate.png)
 
 ## It shows its work
 
-Every rule that moved the score, with its weight. The number is never a black box.
+Every rule that moved the score, and by how much.
 
-![The itemised risk breakdown](docs/media/risk.png)
+![The itemised risk breakdown, showing each rule and its weight](docs/media/risk.png)
 
 ## It leaves a receipt on the commit
 
-Attached as a git note, reviewable in a pull request. It says plainly whether a
-human approved, whether the gate was bypassed, or whether nobody was needed.
+A git note, reviewable in a pull request. It records whether a person approved,
+whether the gate was bypassed, or whether nobody was needed.
 
-![The attestation note on a commit](docs/media/receipt.png)
+![The attestation note attached to a commit](docs/media/receipt.png)
 
 ## It gives you a console
 
-Run `rpt` on a terminal. Arrow keys, Enter to open, then `v` events, `d` diff,
-`t` tests, `r` risk, `a` approve.
+`rpt` on a terminal. Enter opens a run, then `v` events, `d` diff, `t` tests,
+`r` risk, `a` approve.
 
-![The rpt dashboard](docs/media/dashboard.png)
+![The rpt dashboard listing runs with state, risk and cost](docs/media/dashboard.png)
 
-![Run detail](docs/media/run-detail.png)
+![Run detail, showing duration, cost, files, tests and every check](docs/media/run-detail.png)
 
 ---
 
@@ -63,7 +62,7 @@ rpt init
 ```
 
 Open `rpt.config.json` and give it your test command. This is the setting that
-decides whether rpt can tell you anything:
+decides how much rpt can tell you:
 
 ```json
 {
@@ -72,8 +71,8 @@ decides whether rpt can tell you anything:
 }
 ```
 
-Now work with Claude Code exactly as before. rpt records the session, verifies
-it when you commit, and stays out of the way unless something needs you.
+Now use Claude Code as you did before. rpt records the session, verifies it when
+you commit, and stays quiet unless something needs you.
 
 ```bash
 rpt                  # the console
@@ -87,9 +86,9 @@ git log --notes=rpt  # the receipts
 
 ## Two things to know up front
 
-**A skip is not a pass.** If a check could not run, rpt does not know, and not
-knowing means you decide. With no `coverageCommand` the coverage check skips and
-every commit will ask for you. Give it one, or set
+**A skip is not a pass.** A check that could not run means rpt does not know,
+and not knowing sends the decision to you. Without a `coverageCommand` the
+coverage check skips and every commit will ask for approval. Set one, or set
 `"verifiers": { "testQuality": "off" }` to drop that check from the verdict.
 
 **The agent cannot clear itself.** `rpt approve` refuses inside a Claude Code
@@ -103,8 +102,8 @@ verdict and the risk level. The slash command plugin exposes reads only.
 | 51-80 | HIGH | needs your approval |
 | 81-100 | CRITICAL | blocked, no approval path |
 
-`RPT_BYPASS=1 git commit` skips the gate for everything except CRITICAL, and the
-receipt on that commit says `BYPASSED`.
+`RPT_BYPASS=1 git commit` skips the gate for everything except CRITICAL. The
+receipt on that commit then reads `BYPASSED`.
 
 ## More
 

@@ -66,6 +66,51 @@ describe("doctor", () => {
 		expect(check(await doctor(repo), "worktrees")?.ok).toBe(true);
 	});
 
+	// The daemon check asks the lock and then probes the socket, because a
+	// socket file outlives a daemon that was killed and "the file is there"
+	// answers a different question from "something is listening".
+	describe("the daemon check", () => {
+		it("reports a daemon that is actually accepting connections", async () => {
+			const repo = await makeFixtureRepo();
+			await initRepo(repo);
+			const { startDaemon } = await import("../../src/daemon/server.js");
+			const { acquireDaemonLock } = await import("../../src/store/daemonLock.js");
+			const { rptDirOf } = await import("../../src/store/paths.js");
+			const rptDir = rptDirOf(repo);
+			const release = await acquireDaemonLock(rptDir);
+			const daemon = await startDaemon(rptDir, { idleMs: 60_000 });
+			try {
+				const result = check(await doctor(repo), "daemon");
+				expect(result?.ok).toBe(true);
+				expect(result?.detail).toMatch(/accepting connections/);
+			} finally {
+				await daemon.close();
+				await release?.();
+			}
+		});
+
+		it("flags a daemon that holds the lock but answers nothing", async () => {
+			const repo = await makeFixtureRepo();
+			await initRepo(repo);
+			const { acquireDaemonLock } = await import("../../src/store/daemonLock.js");
+			const { rptDirOf } = await import("../../src/store/paths.js");
+			const release = await acquireDaemonLock(rptDirOf(repo));
+			try {
+				const result = check(await doctor(repo), "daemon");
+				expect(result?.ok).toBe(false);
+				expect(result?.detail).toMatch(/not accepting connections/);
+			} finally {
+				await release?.();
+			}
+		});
+
+		it("calls a repository with no daemon healthy, because one is not required", async () => {
+			const repo = await makeFixtureRepo();
+			await initRepo(repo);
+			expect(check(await doctor(repo), "daemon")?.ok).toBe(true);
+		});
+	});
+
 	it("returns every check even when one fails", async () => {
 		expect((await doctor(await makeFixtureRepo())).length).toBeGreaterThanOrEqual(5);
 	});

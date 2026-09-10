@@ -123,6 +123,25 @@ describe("rpt gate", () => {
 	});
 });
 
+describe("an unknown command", () => {
+	// Commander routes an unrecognised verb to the default action because this
+	// program has one, so a typo used to print the run list and exit zero. A
+	// tool that answers a question nobody asked, successfully, is worse than one
+	// that errors.
+	it("is refused by name, not answered with the run list", async () => {
+		const repo = await repoWithEndedRun();
+		const result = await runCli(["riskk", "1"], repo);
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stderr).toContain("riskk");
+		expect(result.stdout).toBe("");
+	});
+
+	it("still lets the bare command through", async () => {
+		const repo = await repoWithEndedRun();
+		expect((await runCli([], repo)).exitCode).toBe(0);
+	});
+});
+
 describe("rpt with no subcommand", () => {
 	it("prints the run list as plain text when its output is piped", async () => {
 		const repo = await repoWithEndedRun();

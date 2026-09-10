@@ -31,6 +31,16 @@ program.option("--format <format>", "text, json or agent", "text");
 // sequences - a shell pipeline is not a screen, and the moment it receives
 // cursor movement the output stops being usable as data.
 program.action(async () => {
+	// Commander routes an unrecognised verb to the default action rather than
+	// erroring, because this program has one. Without this check `rpt riskk 1`
+	// printed the run list and exited zero, so a typo looked like a successful
+	// command that simply had nothing to say - the worst possible answer from a
+	// tool whose whole purpose is to not answer questions it was not asked.
+	const extra = program.args;
+	if (extra.length > 0) {
+		throw new Error(`unknown command "${extra[0]}" - run "rpt --help" to see the available commands`);
+	}
+
 	const root = await repoRoot();
 	if (process.stdout.isTTY !== true) {
 		await printRunList(root);

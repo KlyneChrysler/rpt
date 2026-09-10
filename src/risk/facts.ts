@@ -18,12 +18,25 @@ export type RunFacts = {
 	changeCoverageLinesMeasured: number;
 	changeCoverageLinesCovered: number;
 	undeclaredFiles: string[];
+	// Whether rpt.config.json, read live right now, still matches the
+	// snapshot this run's score is otherwise being assessed against. Not
+	// derived from the sealed diff (pathsChanged) on purpose: an edit made
+	// after the run's end snapshot was captured, but before verification or
+	// approval runs, never appears in that diff at all - exactly the timing
+	// an attacker aiming to avoid the config-changed finding would choose.
+	// This is computed outside this pure module (it needs a second, live
+	// disk read to compare against) and passed in already decided.
+	configChangedSinceSnapshot: boolean;
 };
 
 const TEST_FILE = /(^|\/)(test|tests|spec|__tests__)\//i;
 const TEST_NAME = /\.(test|spec)\.[a-z]+$|_test\.[a-z]+$/i;
 
-export function buildFacts(results: readonly VerifierResult[], config: RptConfig): RunFacts {
+export function buildFacts(
+	results: readonly VerifierResult[],
+	config: RptConfig,
+	configChangedSinceSnapshot = false,
+): RunFacts {
 	const diff = factsOf(results, "diff-integrity");
 	const pathsChanged = stringsOf(diff.observedPaths);
 	const coverage = coverageOf(results);
@@ -41,6 +54,7 @@ export function buildFacts(results: readonly VerifierResult[], config: RptConfig
 		changeCoverageLinesMeasured: coverage.measured,
 		changeCoverageLinesCovered: coverage.covered,
 		undeclaredFiles: stringsOf(diff.undeclared),
+		configChangedSinceSnapshot,
 	};
 }
 

@@ -21,9 +21,22 @@ export function assessRisk(facts: RunFacts, config: RptConfig): RiskAssessment {
 }
 
 function contributionOf(rule: RiskRule, facts: RunFacts, config: RptConfig): Contribution {
+	const baseline = typeof rule.points === "function" ? rule.points(facts) : rule.points;
 	const override = config.ruleOverrides[rule.id];
-	const points = override ?? (typeof rule.points === "function" ? rule.points(facts) : rule.points);
-	return { id: rule.id, label: rule.label, points };
+	return { id: rule.id, label: rule.label, points: override === undefined ? baseline : flooredOverride(baseline, override) };
+}
+
+// A positive baseline is the rule's own finding that the change is risky in
+// some specific way (a sensitive path touched, a dependency changed, ...).
+// An override may raise that - a project deciding a category matters more
+// than the default - but never lower it: zeroing out (or otherwise
+// weakening) a positive rule's override is the same "empty the sensitive-
+// path map" attack in a different field, at the same cost, against the
+// shipped build. A credit rule's baseline (tests-added, scan-clean, ...) is
+// zero or negative and is unaffected - only config/schema.ts's floor of zero
+// bounds those, unchanged from before.
+function flooredOverride(baseline: number, override: number): number {
+	return baseline > 0 ? Math.max(override, baseline) : override;
 }
 
 function assertOverridesKnown(config: RptConfig): void {

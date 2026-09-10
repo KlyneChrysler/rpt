@@ -17,6 +17,7 @@ const clean: RunFacts = {
 	changeCoverageLinesMeasured: 20,
 	changeCoverageLinesCovered: 20,
 	undeclaredFiles: [],
+	configChangedSinceSnapshot: false,
 };
 
 function facts(overrides: Partial<RunFacts>): RunFacts {
@@ -62,14 +63,23 @@ describe("assessRisk", () => {
 		expect(assessment.contributions.find((entry) => entry.id === "files-changed-count")?.points).toBe(10);
 	});
 
-	it("charges thirty for a run that edits rpt's own config file", () => {
-		const assessment = assessRisk(facts({ pathsChanged: ["rpt.config.json"] }), DEFAULT_CONFIG);
+	it("charges thirty when the config drifted from this run's snapshot", () => {
+		const assessment = assessRisk(facts({ configChangedSinceSnapshot: true }), DEFAULT_CONFIG);
 		expect(assessment.contributions.find((entry) => entry.id === "rpt-config-changed")?.points).toBe(30);
 	});
 
-	it("does not charge the config-changed rule for an unrelated file", () => {
-		const assessment = assessRisk(facts({ pathsChanged: ["src/a.ts"] }), DEFAULT_CONFIG);
+	it("does not charge the config-changed rule when nothing drifted", () => {
+		const assessment = assessRisk(facts({ configChangedSinceSnapshot: false }), DEFAULT_CONFIG);
 		expect(assessment.contributions.find((entry) => entry.id === "rpt-config-changed")).toBeUndefined();
+	});
+
+	// The timing gap this rule used to miss: an edit to rpt.config.json made
+	// after the run's own diff was sealed (so it never appears in
+	// pathsChanged) still drifts the live config away from the snapshot, and
+	// still has to score.
+	it("still charges when the edit falls entirely outside the sealed diff", () => {
+		const assessment = assessRisk(facts({ pathsChanged: [], configChangedSinceSnapshot: true }), DEFAULT_CONFIG);
+		expect(assessment.contributions.find((entry) => entry.id === "rpt-config-changed")?.points).toBe(30);
 	});
 
 	it("credits added regression tests", () => {
@@ -100,10 +110,40 @@ describe("assessRisk", () => {
 		expect(assessment.score).toBe(Math.min(100, Math.max(0, summed)));
 	});
 
-	it("honours a config override of a rule's points", () => {
+	it("honours a config override that raises a positive rule's points", () => {
+		const config = { ...DEFAULT_CONFIG, ruleOverrides: { "dependency-changed": 30 } };
+		const assessment = assessRisk(facts({ dependencyChanged: true }), config);
+		expect(assessment.contributions.find((entry) => entry.id === "dependency-changed")?.points).toBe(30);
+	});
+
+	// The attack this closes: emptying config.sensitivePaths defeats the
+	// sensitive-path rules by starving their `when` clause of a match; an
+	// override that lowers a positive rule's points is the same attack
+	// through the field next door, at the same cost. An override may raise a
+	// positive rule's contribution, never lower it below what the rule's own
+	// finding already established.
+	it("floors a positive rule's override at the rule's own baseline rather than letting it lower the score", () => {
 		const config = { ...DEFAULT_CONFIG, ruleOverrides: { "dependency-changed": 5 } };
 		const assessment = assessRisk(facts({ dependencyChanged: true }), config);
-		expect(assessment.contributions.find((entry) => entry.id === "dependency-changed")?.points).toBe(5);
+		expect(assessment.contributions.find((entry) => entry.id === "dependency-changed")?.points).toBe(20);
+	});
+
+	it("floors an override of zero on a positive rule at the rule's baseline, not at zero", () => {
+		const config = { ...DEFAULT_CONFIG, ruleOverrides: { "sensitive-auth": 0 } };
+		const assessment = assessRisk(facts({ sensitiveMatches: [{ category: "auth", paths: ["a"] }] }), config);
+		expect(assessment.contributions.find((entry) => entry.id === "sensitive-auth")?.points).toBe(25);
+	});
+
+	it("still lets a credit rule's override go as low as zero, unaffected by the positive-rule floor", () => {
+		const config = { ...DEFAULT_CONFIG, ruleOverrides: { "tests-added": 0 } };
+		const assessment = assessRisk(facts({ testsAdded: 2 }), config);
+		expect(assessment.contributions.find((entry) => entry.id === "tests-added")?.points).toBe(0);
+	});
+
+	it("floors the function-valued files-changed-count rule's override at whatever it would have scored", () => {
+		const config = { ...DEFAULT_CONFIG, ruleOverrides: { "files-changed-count": 1 } };
+		const assessment = assessRisk(facts({ fileCount: 6 }), config);
+		expect(assessment.contributions.find((entry) => entry.id === "files-changed-count")?.points).toBe(6);
 	});
 
 	it("rejects an override naming a rule that does not exist", () => {

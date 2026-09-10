@@ -46,13 +46,15 @@ function testsAddedWithoutContradictingCoverage(facts: RunFacts): boolean {
 }
 
 export const DEFAULT_RULES: readonly RiskRule[] = [
-	// A run that edits rpt.config.json is editing the very thresholds and
-	// overrides its own score will be judged against, using loadConfig's own
-	// live read of that file - the config schema's [0, 100] cap and the
-	// overrides floor (config/schema.ts) bound how far that can go, but this
-	// rule makes the edit itself a scored, visible finding rather than an
-	// invisible one, on the same footing as the other sensitive-path rules.
-	{ id: "rpt-config-changed", label: "rpt's own configuration file was modified", points: 30, when: (facts) => facts.pathsChanged.includes("rpt.config.json") },
+	// Fires from a live comparison against this run's config snapshot
+	// (facts.configChangedSinceSnapshot - see risk/facts.ts), not from the
+	// sealed diff: an edit timed for after the run's end snapshot but before
+	// verification or approval never appears in that diff, which is exactly
+	// the timing an attacker avoiding this finding would pick. The config
+	// schema's [0, 100] threshold cap and the override floors (config/schema.ts,
+	// risk/assess.ts) bound how far a live edit can move this run's own
+	// score; this rule makes the edit itself a scored, visible finding.
+	{ id: "rpt-config-changed", label: "rpt's own configuration changed since this run's snapshot was taken", points: 30, when: (facts) => facts.configChangedSinceSnapshot },
 	{ id: "sensitive-auth", label: "Authentication or authorization paths modified", points: 25, when: (facts) => hasCategory(facts, "auth") },
 	{ id: "sensitive-database", label: "Database access or migration paths modified", points: 20, when: (facts) => hasCategory(facts, "database") },
 	{ id: "sensitive-infra", label: "Infrastructure or deployment paths modified", points: 20, when: (facts) => hasCategory(facts, "infra") },

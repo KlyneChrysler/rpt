@@ -119,6 +119,16 @@ describe("buildFacts", () => {
 		expect(facts.changeCoverageLinesCovered).toBe(0);
 	});
 
+	it("defaults configChangedSinceSnapshot to false when the caller does not pass one", () => {
+		const facts = buildFacts([emptyDiff], DEFAULT_CONFIG);
+		expect(facts.configChangedSinceSnapshot).toBe(false);
+	});
+
+	it("carries configChangedSinceSnapshot through when the caller passes true", () => {
+		const facts = buildFacts([emptyDiff], DEFAULT_CONFIG, true);
+		expect(facts.configChangedSinceSnapshot).toBe(true);
+	});
+
 	it("treats a non-array observedPaths as no paths rather than throwing", () => {
 		const facts = buildFacts([diffResult({ observedPaths: null, undeclared: [], manifestChanged: false, added: 0, removed: 0 })], DEFAULT_CONFIG);
 		expect(facts.pathsChanged).toEqual([]);

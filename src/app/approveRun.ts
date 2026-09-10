@@ -4,12 +4,11 @@ import type { AgentEvent, EventKind, RunId } from "../domain/events.js";
 import { decide, RISK_LEVELS, type RiskLevel } from "../domain/policy.js";
 import { applyApprovalDecision, isValidApprovalEvent } from "../domain/run.js";
 import type { Verdict, VerdictName } from "../domain/verdict.js";
-import { assessRisk } from "../risk/assess.js";
-import { buildFacts } from "../risk/facts.js";
 import { appendEventIfNoneOfKind, readEvents } from "../store/eventLog.js";
 import { readApproval as readApprovalRecord, writeApproval } from "../store/approvals.js";
 import { rptDirOf } from "../store/paths.js";
 import { upsertRun } from "../store/runIndex.js";
+import { assessRun } from "./assessRun.js";
 import { loadRun } from "./loadRun.js";
 import { resolveRunConfig } from "./loadRunConfig.js";
 import { readFromControllingTerminal } from "./terminalConfirm.js";
@@ -111,8 +110,8 @@ async function record(repoRoot: string, runId: RunId, actor: Actor, decision: Ap
 	// the same arguments.
 	applyApprovalDecision(run.state, verdict.name, decision);
 
-	const { config: riskConfig, configChangedSinceSnapshot } = await resolveRunConfig(repoRoot, run);
-	const { level, score, contributions } = assessRisk(buildFacts(verdict.results, riskConfig, configChangedSinceSnapshot), riskConfig);
+	const { assessment, config: riskConfig } = await assessRun(repoRoot, run, verdict);
+	const { level, score, contributions } = assessment;
 	const configFingerprint = fingerprintOf(riskConfig);
 
 	// Gated on decision === "approved" only, and that qualifier must never be

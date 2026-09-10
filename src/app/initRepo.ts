@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { installHooks } from "../collectors/claudeCodeHooks.js";
+import { installGitHooks } from "./installGitHooks.js";
 import { DEFAULT_CONFIG } from "../config/load.js";
 import { findGitRoot } from "../store/paths.js";
 import { createPricingFileIfAbsent } from "../store/pricing.js";
@@ -8,13 +9,16 @@ import { createPricingFileIfAbsent } from "../store/pricing.js";
 export type InitReport = {
 	repoRoot: string;
 	hooksInstalled: boolean;
+	gitHooksInstalled: boolean;
 	gitignoreUpdated: boolean;
 	configCreated: boolean;
 	pricingCreated: boolean;
 };
 
-// `rpt init` installs agent hooks only. Git hooks and the commit gate belong
-// to a later plan and are not added here.
+// `rpt init` installs both surfaces rpt needs to observe and to gate: the
+// agent hooks that stream events, and the git pre-commit/post-commit hooks
+// that run the gate and attach the attestation. Both chain onto whatever is
+// already installed rather than replacing it.
 //
 // Nothing here writes under .rpt directly: createPricingFileIfAbsent (and the
 // directory creation it does) lives in src/store, the one layer allowed to
@@ -32,9 +36,11 @@ export async function initRepo(startDir: string): Promise<InitReport> {
 		);
 	}
 	await installHooks(repoRoot);
+	const gitHooksInstalled = await installGitHooks(repoRoot);
 	return {
 		repoRoot,
 		hooksInstalled: true,
+		gitHooksInstalled,
 		gitignoreUpdated: await ensureIgnored(repoRoot),
 		configCreated: await createIfAbsent(join(repoRoot, "rpt.config.json"), configTemplate()),
 		pricingCreated: await createPricingFileIfAbsent(repoRoot),

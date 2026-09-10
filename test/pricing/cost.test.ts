@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelUsage } from "../../src/domain/run.js";
-import { costOf, type PricingTable } from "../../src/pricing/cost.js";
+import { costOf, runCost, type PricingTable } from "../../src/pricing/cost.js";
 
 const usage: ModelUsage[] = [
 	{ model: "model-a", input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheCreate: 0 },
@@ -86,5 +86,15 @@ describe("costOf", () => {
 			rates: { "model-a": { input: "3", output: 15, cacheRead: 0.3, cacheCreate: 3.75 } },
 		} as unknown as PricingTable;
 		expect(costOf(usage, stringRate)).toEqual({ usd: null, unpriced: ["model-a"] });
+	});
+});
+
+describe("runCost", () => {
+	it("prices a run the same way costOf does when there is usage", () => {
+		expect(runCost(usage, table)).toEqual(costOf(usage, table));
+	});
+
+	it("is unknown, not zero, for a run rpt recorded no usage for", () => {
+		expect(runCost([], table)).toEqual({ usd: null, unpriced: [] });
 	});
 });

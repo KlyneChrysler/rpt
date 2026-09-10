@@ -52,6 +52,17 @@ export function costOf(usage: readonly ModelUsage[], table: PricingTable): Cost 
 	return { usd: round(usd), unpriced: [] };
 }
 
+// What a run cost, as opposed to what a list of usage records prices out at.
+// The difference is the empty list: summing nothing is legitimately zero, but
+// a run rpt recorded no model usage for is one whose transcript rpt never
+// read, and printing "cost 0.00 USD" for it states a measurement that was
+// never taken. Callers reporting a run's cost to a person - the attestation,
+// the console, the read model - use this; callers pricing a known set of usage
+// records use costOf directly.
+export function runCost(usage: readonly ModelUsage[], table: PricingTable): Cost {
+	return usage.length === 0 ? { usd: null, unpriced: [] } : costOf(usage, table);
+}
+
 // Validates shape, not just presence: table.rates[entry.model] is typed as
 // Rates, but nothing upstream guarantees a value read from JSON actually has
 // that shape (see loadPricing). A rate object missing a key, carrying an

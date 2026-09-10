@@ -2,8 +2,12 @@
 	"name": "@klyne/rpt",
 	"version": "0.1.0",
 	"type": "module",
-	"bin": { "rpt": "./dist/cli/index.js" },
-	"engines": { "node": ">=22" },
+	"bin": {
+		"rpt": "./dist/cli/index.js"
+	},
+	"engines": {
+		"node": ">=22"
+	},
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
 		"test": "vitest run",
@@ -12,15 +16,19 @@
 	},
 	"dependencies": {
 		"commander": "^12.1.0",
+		"ink": "^5.2.1",
 		"picomatch": "^4.0.2",
 		"proper-lockfile": "^4.1.2",
+		"react": "^18.3.1",
 		"zod": "^3.23.8"
 	},
 	"devDependencies": {
 		"@types/node": "^22.7.5",
 		"@types/picomatch": "^3.0.1",
 		"@types/proper-lockfile": "^4.1.4",
+		"@types/react": "^18.3.31",
 		"@vitest/coverage-v8": "^2.1.2",
+		"ink-testing-library": "^4.0.0",
 		"typescript": "^5.6.3",
 		"vitest": "^2.1.2"
 	}

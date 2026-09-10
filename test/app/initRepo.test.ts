@@ -126,11 +126,20 @@ describe("initRepo", () => {
 		expect(JSON.parse(await read(repo, "rpt.config.json"))).toHaveProperty("thresholds");
 	});
 
+	it("installs the git pre-commit gate hook", async () => {
+		const repo = await makeFixtureRepo();
+		const report = await initRepo(repo);
+		expect(report.gitHooksInstalled).toBe(true);
+		expect(await read(repo, ".git/hooks/pre-commit")).toContain("rpt gate");
+	});
+
 	it("is idempotent", async () => {
 		const repo = await makeFixtureRepo();
 		const first = await initRepo(repo);
 		const second = await initRepo(repo);
 		expect(first.hooksInstalled).toBe(true);
+		expect(first.gitHooksInstalled).toBe(true);
 		expect(second.configCreated).toBe(false);
+		expect(second.gitHooksInstalled).toBe(false);
 	});
 });

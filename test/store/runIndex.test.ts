@@ -102,6 +102,11 @@ describe("activeRun", () => {
 	it("is null when there are no runs at all", async () => {
 		expect(await activeRun(rptDir)).toBeNull();
 	});
+
+	it("still names a rejected run, so the gate keeps refusing its commit", async () => {
+		await upsertRun(rptDir, entry(1, { state: "REJECTED" }));
+		expect((await activeRun(rptDir))?.id).toBe(1);
+	});
 });
 
 // activeRun answers the gate's question - is there a run awaiting adjudication -

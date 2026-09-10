@@ -104,8 +104,14 @@ export async function activeRun(rptDir: string): Promise<RunIndexEntry | null> {
 	return candidates[0] ?? null;
 }
 
+// Not `!isTerminal`: REJECTED is terminal in the state machine and is exactly
+// the run the gate must keep refusing. Treating it as no longer active let a
+// human reject a run and then commit its changes anyway, with the gate silent
+// and nothing recorded - the one outcome this whole layer exists to prevent.
+// RECORDED is the only end this predicate accepts, because a recorded run's
+// commit has already landed and been attested.
 function isAdjudicable(entry: RunIndexEntry): boolean {
-	return entry.state !== "RUNNING" && !isTerminal(entry.state);
+	return entry.state !== "RUNNING" && entry.state !== "RECORDED";
 }
 
 // A different question from activeRun's, deliberately kept as a different

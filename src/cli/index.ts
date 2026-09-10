@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import type { AgentRun } from "../domain/run.js";
+import type { RunId } from "../domain/events.js";
+import { actorFromEnvironment, approveRun, rejectRun } from "../app/approveRun.js";
+import { assessRun } from "../app/assessRun.js";
+import { gateCommit } from "../app/gateCommit.js";
 import { loadRun } from "../app/loadRun.js";
 import { initRepo } from "../app/initRepo.js";
+import { recordCommit } from "../app/recordCommit.js";
+import { readVerdict, verifyRun } from "../app/verifyRun.js";
+import { diffPatch } from "../git/diff.js";
 import { readEvents } from "../store/eventLog.js";
 import { findRepoRoot, rptDirOf } from "../store/paths.js";
 import { readStartFailures, type StartFailure } from "../store/startFailures.js";
@@ -10,6 +17,7 @@ import { latestEntries, openRun, readIndex, type RunIndexEntry } from "../store/
 import { runHookCommand } from "./hook.js";
 import type { OutputFormat } from "./format.js";
 import { renderActiveRun, renderRun, renderRunList, renderTimeline, type PendingRun } from "./render.js";
+import { renderRisk, renderVerdict } from "./renderRisk.js";
 
 const program = new Command();
 program.name("rpt").description("AI agent flight recorder and verification engine");
@@ -69,6 +77,81 @@ program
 		if (events.length === 0) throw new Error(await diagnosisMessage(root, runId));
 		process.stdout.write(renderTimeline(events, gapCount, formatOf()));
 	});
+
+program.command("verify <id>").description("run or rerun verification").action(async (id: string) => {
+	const root = await repoRoot();
+	const verdict = await verifyRun(root, parseRunId(id));
+	process.stdout.write(`${renderVerdict(verdict, formatOf())}\n`);
+});
+
+program.command("risk <id>").description("show the itemised risk assessment").action(async (id: string) => {
+	const root = await repoRoot();
+	const runId = parseRunId(id);
+	const verdict = await readVerdict(root, runId);
+	// Refused rather than silently verifying: verification runs a repository's
+	// test command in a worktree, which is not something a read-only-looking
+	// command should start on a user's behalf.
+	if (verdict === null) throw new Error(`run ${runId} has not been verified yet - run "rpt verify ${runId}" first`);
+	const { assessment } = await assessRun(root, await loadRunOrThrow(root, runId), verdict);
+	process.stdout.write(`${renderRisk(assessment, formatOf())}\n`);
+});
+
+program.command("diff <id>").description("show the diff rpt observed").action(async (id: string) => {
+	const root = await repoRoot();
+	const run = await loadRunOrThrow(root, parseRunId(id));
+	if (run.baseSha === null || run.endSha === null) {
+		throw new Error(`run ${run.id} has no sealed end state, so there is no observed diff to show`);
+	}
+	process.stdout.write(`${await diffPatch(root, run.baseSha, run.endSha)}\n`);
+});
+
+program.command("approve <id>").description("record a human approval, terminal required").action(async (id: string) => {
+	await decide(parseRunId(id), "approved");
+});
+
+program.command("reject <id>").description("record a human rejection, terminal required").action(async (id: string) => {
+	await decide(parseRunId(id), "rejected");
+});
+
+// The exit code is the whole contract here: git runs this from pre-commit and
+// reads nothing but the status. The explanation goes to stderr so a caller
+// piping stdout still gets clean output.
+program.command("gate").description("pre-commit gate").action(async () => {
+	const outcome = await gateCommit(await repoRoot());
+	if (!outcome.allowed) process.stderr.write(`${outcome.message}\n`);
+	process.exitCode = outcome.exitCode;
+});
+
+// Always exits zero. It runs from post-commit, after the commit exists, where
+// a non-zero status can undo nothing and only alarms a user who has no action
+// available to them.
+program
+	.command("record")
+	.description("attach the attestation note to the commit that just landed")
+	.option("--quiet", "print nothing on success")
+	.action(async (options: { quiet?: boolean }) => {
+		try {
+			const note = await recordCommit(await repoRoot());
+			if (note !== null && options.quiet !== true) process.stdout.write(note);
+		} catch (error) {
+			process.stderr.write(`rpt: could not attach the attestation note: ${messageOf(error)}\n`);
+		}
+	});
+
+async function decide(runId: RunId, decision: "approved" | "rejected"): Promise<void> {
+	const root = await repoRoot();
+	const actor = actorFromEnvironment();
+	const approval = decision === "approved" ? await approveRun(root, runId, actor) : await rejectRun(root, runId, actor);
+	process.stdout.write(
+		formatOf() === "json"
+			? `${JSON.stringify(approval, null, 2)}\n`
+			: `run ${approval.runId} ${approval.decision} by ${approval.by} at ${approval.at}\n`,
+	);
+}
+
+function messageOf(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 
 // Read commands answer for a repository, not for a directory, and a repository
 // that cannot be located is not the same fact as a repository with no runs. Saying
@@ -201,7 +284,7 @@ async function readStdin(): Promise<string> {
 // itself (a future command that doesn't await something it starts, for example).
 function reportFailure(error: unknown): void {
 	process.exitCode = 1;
-	const message = error instanceof Error ? error.message : String(error);
+	const message = messageOf(error);
 	if (formatOf() === "json") {
 		process.stdout.write(`${JSON.stringify({ error: message }, null, 2)}\n`);
 		return;
